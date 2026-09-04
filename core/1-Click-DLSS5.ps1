@@ -814,7 +814,7 @@ function Get-GamesCache {
         }
     }
     
-    return ,@($list | Sort-Object -Property Order, Name)
+    return @($list | Sort-Object -Property Order, Name)
 }
 
 function Save-GamesCache {
@@ -822,7 +822,16 @@ function Save-GamesCache {
     if ($null -eq $Games) { return }
     try {
         $storable = @()
-        foreach ($g in @($Games)) {
+        $flat = @()
+        foreach ($item in @($Games)) {
+            if ($item -is [System.Collections.IEnumerable] -and -not ($item -is [string]) -and -not ($item -is [System.Management.Automation.PSCustomObject])) {
+                foreach ($sub in $item) { if ($sub) { $flat += $sub } }
+            }
+            else {
+                if ($item) { $flat += $item }
+            }
+        }
+        foreach ($g in $flat) {
             if (-not $g -or -not $g.Path) { continue }
             $storable += [pscustomobject]@{
                 Order       = $g.Order
@@ -841,7 +850,7 @@ function Save-GamesCache {
         else {
             $json = $storable | ConvertTo-Json -Depth 4
         }
-        $utf8WithBom = [System.Text.Encoding]::UTF8
+        $utf8WithBom = New-Object System.Text.UTF8Encoding($true)
         [System.IO.File]::WriteAllText($script:CachePath, $json, $utf8WithBom)
     }
     catch {}
@@ -3281,13 +3290,21 @@ $comboLang.Add_SelectedIndexChanged({
 
 # --- EVENTOS E LOGICA DE INSPEC AO ---
 function Select-GameInInspector {
-    param([pscustomobject]$GameObj)
+    param($GameObj)
     if ($null -eq $GameObj) { return }
+    if ($GameObj -is [System.Collections.IEnumerable] -and -not ($GameObj -is [string]) -and -not ($GameObj -is [System.Management.Automation.PSCustomObject])) {
+        $firstItem = $null
+        foreach ($sub in $GameObj) {
+            if ($sub) { $firstItem = $sub; break }
+        }
+        $GameObj = $firstItem
+        if ($null -eq $GameObj) { return }
+    }
     $script:SelectedGameObj = $GameObj
     $d = Get-Dict -Lang $script:CurrentLang
 
-    $lblGameTitle.Text = $GameObj.Name
-    $txtFolderPath.Text = $GameObj.Path
+    $lblGameTitle.Text = [string]$GameObj.Name
+    $txtFolderPath.Text = [string]$GameObj.Path
 
     try {
         $resolved = Resolve-GameTarget -TargetPath $GameObj.Path
@@ -3295,8 +3312,16 @@ function Select-GameInInspector {
     }
     catch {}
 
-    if ($GameObj.Icon) {
-        $picIcon.Image = $GameObj.Icon.ToBitmap()
+    if ($GameObj.Icon -and ($GameObj.Icon -is [System.Drawing.Icon])) {
+        try {
+            $picIcon.Image = $GameObj.Icon.ToBitmap()
+        }
+        catch {
+            $picIcon.Image = $null
+        }
+    }
+    elseif ($GameObj.Icon -and ($GameObj.Icon -is [System.Drawing.Image])) {
+        $picIcon.Image = $GameObj.Icon
     }
     else {
         $picIcon.Image = $null
@@ -3370,12 +3395,30 @@ function Refresh-GameLibraryUI {
 
     $d = Get-Dict -Lang $script:CurrentLang
 
-    foreach ($g in $Games) {
+    $flatGames = @()
+    if ($Games) {
+        foreach ($item in $Games) {
+            if ($item -is [System.Collections.IEnumerable] -and -not ($item -is [string]) -and -not ($item -is [System.Management.Automation.PSCustomObject])) {
+                foreach ($sub in $item) { if ($sub) { $flatGames += $sub } }
+            }
+            else {
+                if ($item) { $flatGames += $item }
+            }
+        }
+    }
+
+    foreach ($g in $flatGames) {
         $imgIdx = -1
         if ($g.Icon) {
             try {
-                $imageList.Images.Add($g.Icon.ToBitmap())
-                $imgIdx = $imageList.Images.Count - 1
+                if ($g.Icon -is [System.Drawing.Icon]) {
+                    $imageList.Images.Add($g.Icon.ToBitmap())
+                    $imgIdx = $imageList.Images.Count - 1
+                }
+                elseif ($g.Icon -is [System.Drawing.Image]) {
+                    $imageList.Images.Add($g.Icon)
+                    $imgIdx = $imageList.Images.Count - 1
+                }
             }
             catch {}
         }
@@ -3747,7 +3790,18 @@ Update-UiLanguage -Lang $script:CurrentLang
 
 if (-not $env:DLSS5_HEADLESS) {
     $d = Get-Dict -Lang $script:CurrentLang
-    $cached = @(Get-GamesCache)
+    $rawCached = Get-GamesCache
+    $cached = @()
+    if ($rawCached) {
+        foreach ($c in $rawCached) {
+            if ($c -is [System.Collections.IEnumerable] -and -not ($c -is [string]) -and -not ($c -is [System.Management.Automation.PSCustomObject])) {
+                foreach ($sub in $c) { if ($sub) { $cached += $sub } }
+            }
+            else {
+                if ($c) { $cached += $c }
+            }
+        }
+    }
     if ($cached.Count -gt 0) {
         $script:CurrentGameLibrary = $cached
         Refresh-GameLibraryUI -Games $cached
