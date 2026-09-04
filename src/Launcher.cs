@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
@@ -44,8 +44,8 @@ namespace OneClickDLSS5
                 else
                 {
                     MessageBox.Show(
-                        "Não foi possível localizar o script principal do 1 Click DLSS 5 em:\n" + scriptPath,
-                        "1 Click DLSS 5 - Arquivo Não Encontrado",
+                        "Could not find the main 1 Click DLSS 5 script at:\n" + scriptPath,
+                        "1 Click DLSS 5 - File Not Found",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Error);
                     return 1;
@@ -79,8 +79,8 @@ namespace OneClickDLSS5
                     if (proc.ExitCode != 0 && !string.IsNullOrEmpty(stderr) && !stderr.Contains("OperationCanceledException"))
                     {
                         MessageBox.Show(
-                            "Ocorreu um erro durante a inicialização do 1 Click DLSS 5:\n\n" + stderr,
-                            "1 Click DLSS 5 - Erro",
+                            "An error occurred while starting 1 Click DLSS 5:\n\n" + stderr,
+                            "1 Click DLSS 5 - Error",
                             MessageBoxButtons.OK,
                             MessageBoxIcon.Warning);
                     }
@@ -90,8 +90,8 @@ namespace OneClickDLSS5
             catch (Exception ex)
             {
                 MessageBox.Show(
-                    "Falha ao iniciar o 1 Click DLSS 5:\n\n" + ex.Message,
-                    "1 Click DLSS 5 - Falha Crítica",
+                    "Failed to start 1 Click DLSS 5:\n\n" + ex.Message,
+                    "1 Click DLSS 5 - Critical Failure",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
                 return 1;
