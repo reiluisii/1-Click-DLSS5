@@ -896,16 +896,18 @@ function Show-InstallationSuccessDialog {
     $infoBox.BackColor = [System.Drawing.Color]::FromArgb(20, 30, 50)
     [void]$succForm.Controls.Add($infoBox)
 
+    $gamePrefix = if ($d.ColGame) { $d.ColGame } else { "Game" }
     $lblGame = New-Object System.Windows.Forms.Label
-    $lblGame.Text = (if ($d.ColGame) { $d.ColGame } else { "Game" }) + ": " + $GameName
+    $lblGame.Text = "$gamePrefix`: $GameName"
     $lblGame.Location = New-Object System.Drawing.Point(15, 12)
     $lblGame.Size = New-Object System.Drawing.Size(555, 22)
     $lblGame.Font = New-Object System.Drawing.Font("Segoe UI Bold", 10.5)
     $lblGame.ForeColor = [System.Drawing.Color]::White
     [void]$infoBox.Controls.Add($lblGame)
 
+    $modePrefix = if ($d.ColMode) { $d.ColMode } else { "Mode" }
     $lblMode = New-Object System.Windows.Forms.Label
-    $lblMode.Text = (if ($d.ColMode) { $d.ColMode } else { "Mode" }) + ": " + $ModeName
+    $lblMode.Text = "$modePrefix`: $ModeName"
     $lblMode.Location = New-Object System.Drawing.Point(15, 38)
     $lblMode.Size = New-Object System.Drawing.Size(555, 20)
     $lblMode.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9.5)
@@ -2085,7 +2087,12 @@ function Install-Dlss5 {
     Write-Status -Message "[INSTALACAO] Concluida com sucesso! Total de componentes injetados: $($state.InjectedFiles.Count) | Arquivos originais em backup: $($state.BackedUpFiles.Count)" -Level "OK"
     Write-Status -Message "================================================================================" -Level "INFO"
     if ($ProgressCallback) { &$ProgressCallback 100 "DLSS 5 instalado com sucesso!" }
-    Show-InstallationSuccessDialog -GameName $target.ExeName -ModeName $modeReadable -TargetExePath $target.Executable
+    try {
+        Show-InstallationSuccessDialog -GameName $target.ExeName -ModeName $modeReadable -TargetExePath $target.Executable
+    }
+    catch {
+        Write-Status -Message "Aviso: Nao foi possivel exibir o dialogo visual de sucesso: $($_.Exception.Message)" -Level "WARN"
+    }
 }
 
 # --- MOTOR DE RESTAURACAO DE FABRICA (UNINSTALL) ---
