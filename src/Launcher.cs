@@ -19,17 +19,9 @@ namespace OneClickDLSS5
 {
     static class Program
     {
-        [DllImport("user32.dll")]
-        private static extern bool SetProcessDpiAwarenessContext(int dpiFlag);
-
         [STAThread]
         static int Main(string[] args)
         {
-            try
-            {
-                SetProcessDpiAwarenessContext(-4); // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
-            }
-            catch { }
 
             string baseDir = AppDomain.CurrentDomain.BaseDirectory;
             string scriptPath = Path.Combine(baseDir, @"core\1-Click-DLSS5.ps1");

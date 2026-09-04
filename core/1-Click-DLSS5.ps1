@@ -14,26 +14,10 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-# --- ATIVACAO DE HIGH-DPI PER-MONITOR V2 (CRISTAL CLEAR EM 1080P/1440P/4K) ---
-try {
-    if (-not ([System.Management.Automation.PSTypeName]'DLSS5DpiHelper').Type) {
-        Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public class DLSS5DpiHelper {
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern bool SetProcessDpiAwarenessContext(int dpiFlag);
-    [DllImport("uxtheme.dll", ExactSpelling = true, CharSet = CharSet.Unicode)]
-    public static extern int SetWindowTheme(IntPtr hWnd, string pszSubAppName, string pszSubIdList);
-    public static void EnableHighDpi() {
-        try { SetProcessDpiAwarenessContext(-4); } catch {}
-    }
-}
-"@
-    }
-    [DLSS5DpiHelper]::EnableHighDpi()
-}
-catch {}
+# --- DPI SCALING SYSTEM-AWARE VIRTUALIZATION ---
+# Mantem a renderizacao sob DWM Virtualization proporcional do Windows (identica a v2.5.1),
+# impedindo que o WinForms aumente metricas de fontes isoladamente em 125%/150%/175% de escala,
+# o que causaria sobreposicao e corte de textos em layouts de coordenadas fixas.
 
 # --- CONFIGURACOES GLOBAIS ---
 $script:Version = "2.7.0-beta"
@@ -1432,6 +1416,10 @@ TutorialProgress=4
 VariableListHeight=200.000000
 VariableListUseTabs=0
 
+[renodx]
+SettingsMode=0
+SwapChainForceBorderless=0
+
 [RenoDX.DLSS5]
 EnableHooks=$EnableHooks
 NeuralUplift=1
@@ -1517,6 +1505,10 @@ ShowScreenshotMessage=1
 TutorialProgress=4
 VariableListHeight=200.000000
 VariableListUseTabs=0
+
+[renodx]
+SettingsMode=0
+SwapChainForceBorderless=0
 
 [RenoDX.DLSS5]
 EnableHooks=$EnableHooks
@@ -2649,6 +2641,7 @@ $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 $form.BackColor = [System.Drawing.Color]::FromArgb(11, 15, 25)
 $form.ForeColor = [System.Drawing.Color]::Gainsboro
 $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::None
 $form.AllowDrop = $true
 
 if (Test-Path -LiteralPath $script:IconPath) {
