@@ -18,7 +18,7 @@
 
 ---
 
-> **Fork note (english-default branch):** this branch starts in English, fixes several GUI rendering problems, and ships a payload verification script. Read [`docs/FORK-NOTES.md`](docs/FORK-NOTES.md) first: it documents every change and contains a full security review of the v2.6.0 payload, including why `nvngx_dlssnr.dll` cannot be verified.
+> **Fork note (english-default branch):** the upstream release opened in Portuguese and the English switch left much of the UI untranslated or garbled, so this branch starts in English, fixes several GUI rendering problems, and ships a payload verification script. Read [`docs/FORK-NOTES.md`](docs/FORK-NOTES.md) first: it documents every change and contains a full security review of the v2.6.0 payload, including why `nvngx_dlssnr.dll` cannot be verified.
 
 ## 📖 Table of Contents
 - [Overview](#-overview)

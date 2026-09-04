@@ -3,6 +3,16 @@
 Branch: `english-default`, based on upstream `reiluisii/1-Click-DLSS5` at commit `48135cf`
 (tag `v2.6.0`, the v2.6.0-release package). Prepared 2026-09-04.
 
+## Why this fork exists
+
+I ran the v2.6.0 release and hit problems with the Portuguese-to-English translation: the app
+opened in Portuguese, switching the dropdown to English left a lot of the interface untranslated
+(status bar, dialogs, error messages, log lines), and several labels and buttons showed empty
+brackets, stray spaces, or clipped text. Rather than keep flipping the language switch and
+guessing at what the Portuguese meant, I had the script translated properly so it runs in English
+natively, fixed the rendering problems that were causing the broken labels, and had the whole
+package checked for safety before using it. This branch is that solution.
+
 This document has three parts: what was changed and why, how to publish and maintain the fork,
 and the full security review of the v2.6.0 package (including how to re-run the checks yourself).
 
