@@ -160,6 +160,20 @@ function Get-Sha256 {
     return ( -join ($hashBytes | ForEach-Object { "{0:x2}" -f $_ }))
 }
 
+function Test-PayloadIdenticalFile {
+    # Verdadeiro se o arquivo na pasta do jogo e uma copia byte-a-byte do arquivo do nosso payload
+    # (ou seja: foi injetado por este programa e NAO e um runtime nativo do jogo).
+    param([string]$GameFile, [string]$PayloadName)
+    try {
+        if (-not (Test-Path -LiteralPath $GameFile -PathType Leaf)) { return $false }
+        $payload = Join-Path (Get-DLSS5PayloadDirectory) $PayloadName
+        if (-not (Test-Path -LiteralPath $payload -PathType Leaf)) { return $false }
+        if ((Get-Item -LiteralPath $GameFile).Length -ne (Get-Item -LiteralPath $payload).Length) { return $false }
+        return ((Get-Sha256 -Path $GameFile) -eq (Get-Sha256 -Path $payload))
+    }
+    catch { return $false }
+}
+
 function Get-PeArchitecture {
     param([Parameter(Mandatory = $true)][string]$Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return "UNKNOWN" }
@@ -405,7 +419,14 @@ function Detect-GameUpscalerType {
 
     # 3. Verifica upscaler nativo do jogo (sem mod)
     foreach ($f in $allFiles) {
-        if ($f -match '^(nvngx_dlss\.dll|nvngx_dlssd\.dll|nvngx_dlssg\.dll|sl\.dlss\.dll)$') {
+        if ($f -match '^(nvngx_dlssd\.dll|nvngx_dlssg\.dll|sl\.dlss\.dll)$') {
+            return "NATIVE_DLSS"
+        }
+    }
+    # nvngx_dlss.dll so conta como nativo se NAO for a copia que este programa injetou
+    foreach ($fPath in $folders) {
+        $cand = Get-ChildItem -LiteralPath $fPath -Filter "nvngx_dlss.dll" -File -Recurse -Depth 4 -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($cand -and -not (Test-PayloadIdenticalFile -GameFile $cand.FullName -PayloadName "nvngx_dlss.dll")) {
             return "NATIVE_DLSS"
         }
     }
@@ -1631,7 +1652,7 @@ function Uninstall-Dlss5 {
         "dlss5-feed-host.log", "dlss5-feed-crash.dmp",
         "VkLayer_feed_vk.dll", "VkLayer_feed_vk.json", "run-with-feed-layer.bat",
         "VkLayer_feed_vk32.dll", "VkLayer_feed_vk32.json", "run-with-feed-layer32.bat",
-        "nvngx_dlssnr.dll", "sl.dlss_nr.dll",
+        "nvngx_dlssnr.dll", "sl.dlss_nr.dll", "nvngx_dlss.dll",
         "OptiScaler.ini", "OptiScaler.log",
         "ReShade.ini", "ReShadePreset.ini", "ReShade.log",
         $script:StateName, "_1Click_DLSS5_State.json", "_DLSS5_Easy_Installer_State.json", "dlss5_backup_manifest.json"
@@ -1655,6 +1676,7 @@ function Uninstall-Dlss5 {
     $purgeList = @($purgeList | Where-Object {
         $fn = $_.ToLower()
         if ($fn -match '^(libxess.*\.dll|.*xess.*\.dll|.*xell.*\.dll)$') { return $false }
+        if ($fn -eq 'nvngx_dlss.dll' -and (Test-PayloadIdenticalFile -GameFile (Join-Path $targetFolder $_) -PayloadName "nvngx_dlss.dll")) { return $true } # copia nossa, pode remover
         if ($fn -match '^nvngx_dlss(?!nr).*') { return $false } # Preserva nvngx_dlss.dll, dlssd, dlssg, deepdvc
         if ($fn -match '^sl\.(?!dlss_nr).*') { return $false } # Preserva sl.interposer, sl.common, sl.dlss etc.
         if ($fn -match '^(amd_.*|ffx_.*|dxcompiler\.dll|d3d12core\.dll|bink2.*|steam_api.*|onlinefix.*|xgameruntime.*)$') { return $false }
