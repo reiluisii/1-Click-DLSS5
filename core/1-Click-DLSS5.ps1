@@ -2294,7 +2294,49 @@ function Uninstall-Dlss5 {
     if (-not $env:DLSS5_HEADLESS) { [System.Windows.Forms.MessageBox]::Show($d.RestoreMsg, $d.RestoreTitle, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) }
 }
 
+function Get-SteamAppId {
+    param([string]$ExecutablePath)
+    try {
+        $full = [System.IO.Path]::GetFullPath($ExecutablePath)
+        $curr = [System.IO.Path]::GetDirectoryName($full)
+        $steamappsDir = $null
+        $gameFolderName = $null
+        
+        while ($curr -and [System.IO.Path]::GetPathRoot($curr) -ne $curr) {
+            $parent = [System.IO.Path]::GetDirectoryName($curr)
+            if ($parent) {
+                $pLeaf = [System.IO.Path]::GetFileName($parent)
+                $pp = [System.IO.Path]::GetDirectoryName($parent)
+                $ppLeaf = if ($pp) { [System.IO.Path]::GetFileName($pp) } else { "" }
+                if ($pLeaf -eq "common" -and $ppLeaf -eq "steamapps") {
+                    $steamappsDir = $pp
+                    $gameFolderName = [System.IO.Path]::GetFileName($curr)
+                    break
+                }
+            }
+            $curr = $parent
+        }
+
+        if ($steamappsDir -and (Test-Path -LiteralPath $steamappsDir)) {
+            $acfFiles = Get-ChildItem -LiteralPath $steamappsDir -Filter "appmanifest_*.acf" -File -ErrorAction SilentlyContinue
+            foreach ($acf in $acfFiles) {
+                $txt = [System.IO.File]::ReadAllText($acf.FullName)
+                if ($txt -match '"installdir"\s+"([^"]+)"') {
+                    if ($matches[1].ToLower() -eq $gameFolderName.ToLower()) {
+                        if ($txt -match '"appid"\s+"([0-9]+)"') {
+                            return $matches[1]
+                        }
+                    }
+                }
+            }
+        }
+    }
+    catch {}
+    return $null
+}
+
 function Start-GameExecutable {
+
     param([Parameter(Mandatory = $true)][string]$ExecutablePath)
     if (-not (Test-Path -LiteralPath $ExecutablePath -PathType Leaf)) {
         throw "ERR_EXE_NOT_FOUND: Executavel do jogo nao encontrado: $ExecutablePath"
@@ -2314,6 +2356,24 @@ function Start-GameExecutable {
     Set-GameHighPerformanceGpuPreference -ExecutablePath $ExecutablePath
 
     Write-Status -Message "Iniciando jogo: $(Split-Path -Leaf $ExecutablePath)..." -Level "INFO"
+
+    # Deteccao de jogo da Steam para inicializacao sem bloqueio de DRM
+    $steamAppId = Get-SteamAppId -ExecutablePath $ExecutablePath
+    if ($steamAppId) {
+        $appIdFile = Join-Path $folder "steam_appid.txt"
+        if (-not (Test-Path -LiteralPath $appIdFile)) {
+            try {
+                [System.IO.File]::WriteAllText($appIdFile, $steamAppId, [System.Text.Encoding]::ASCII)
+                Write-Status -Message "[STEAM] Arquivo 'steam_appid.txt' configurado automaticamente com AppID: $steamAppId" -Level "INFO"
+            } catch {}
+        }
+        $steamProc = Get-Process -Name "steam" -ErrorAction SilentlyContinue
+        if ($steamProc) {
+            Write-Status -Message "[EXECUCAO] Steam ativa detectada. Disparando inicializacao segura do jogo via protocolo Steam (steam://rungameid/$steamAppId)..." -Level "OK"
+            Start-Process "steam://rungameid/$steamAppId"
+            return
+        }
+    }
 
     $oldVkPath = $env:VK_LAYER_PATH
     $oldVkLayers = $env:VK_INSTANCE_LAYERS
