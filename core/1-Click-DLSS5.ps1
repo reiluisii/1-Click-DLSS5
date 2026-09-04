@@ -35,6 +35,74 @@ public class DLSS5DpiHelper {
 }
 catch {}
 
+# --- FATOR DE ESCALA DPI + ESCALONAMENTO REAL DAS JANELAS (125% / 150% / 200%) ---
+# SetProcessDpiAwarenessContext apenas informa ao Windows que sabemos lidar com DPI; sem isto
+# o WinForms desenha tudo em pixels fisicos e a janela fica minuscula em telas 4K.
+try {
+    if (-not ([System.Management.Automation.PSTypeName]'DLSS5DpiQuery').Type) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class DLSS5DpiQuery {
+    [DllImport("user32.dll")] public static extern uint GetDpiForSystem();
+}
+"@
+    }
+    $script:DpiScale = [Math]::Round(([double][DLSS5DpiQuery]::GetDpiForSystem() / 96.0), 2)
+}
+catch { $script:DpiScale = 1.0 }
+if (-not $script:DpiScale -or $script:DpiScale -lt 1.0) { $script:DpiScale = 1.0 }
+
+function Scale-ControlTree {
+    param($Control, [double]$Factor, $ParentFont = $null)
+    # Fontes NAO sao escaladas aqui: com DPI-awareness ativo o GDI ja converte pontos -> pixels
+    # usando o DPI real do monitor. Apenas a geometria em pixels (Form.Scale) precisa de ajuste.
+    if ($Control -is [System.Windows.Forms.ListView]) {
+        foreach ($col in $Control.Columns) { $col.Width = [int]($col.Width * $Factor) }
+        foreach ($il in @($Control.SmallImageList, $Control.LargeImageList)) {
+            if ($il -and $il.Tag -ne "dpi-scaled") {
+                $il.ImageSize = New-Object System.Drawing.Size([int]($il.ImageSize.Width * $Factor), [int]($il.ImageSize.Height * $Factor))
+                $il.Tag = "dpi-scaled"
+            }
+        }
+    }
+    if ($Control -is [System.Windows.Forms.PictureBox] -and $Control.Image -and $Control.SizeMode -eq [System.Windows.Forms.PictureBoxSizeMode]::Normal) {
+        $Control.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::Zoom
+    }
+    foreach ($child in $Control.Controls) {
+        Scale-ControlTree -Control $child -Factor $Factor -ParentFont $Control.Font
+    }
+}
+
+function Apply-DpiScaling {
+    param([System.Windows.Forms.Form]$Form)
+    $factor = $script:DpiScale
+    if (-not $Form -or $factor -le 1.0 -or $Form.Tag -eq "dpi-scaled") { return }
+    try {
+        $Form.SuspendLayout()
+        # Form.Scale ja escala Size, MinimumSize e todos os controles filhos (inclusive ancorados)
+        $Form.Scale((New-Object System.Drawing.SizeF([float]$factor, [float]$factor)))
+        Scale-ControlTree -Control $Form -Factor $factor -ParentFont $null
+        # Nunca maior que a area util do monitor (barra de tarefas descontada)
+        $wa = [System.Windows.Forms.Screen]::FromControl($Form).WorkingArea
+        if ($Form.Width -gt $wa.Width -or $Form.Height -gt $wa.Height) {
+            $newW = [Math]::Min($Form.Width, $wa.Width)
+            $newH = [Math]::Min($Form.Height, $wa.Height)
+            $Form.MinimumSize = New-Object System.Drawing.Size([Math]::Min($Form.MinimumSize.Width, $newW), [Math]::Min($Form.MinimumSize.Height, $newH))
+            $Form.Size = New-Object System.Drawing.Size($newW, $newH)
+        }
+        if ($Form.StartPosition -eq [System.Windows.Forms.FormStartPosition]::CenterScreen) {
+            $cx = [int]$wa.X + [int](([int]$wa.Width - [int]$Form.Width) / 2)
+            $cy = [int]$wa.Y + [int](([int]$wa.Height - [int]$Form.Height) / 2)
+            $Form.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
+            $Form.Location = New-Object System.Drawing.Point($cx, $cy)
+        }
+        $Form.Tag = "dpi-scaled"
+        $Form.ResumeLayout($true)
+    }
+    catch {}
+}
+
 # --- CONFIGURACOES GLOBAIS ---
 $script:Version = "2.6.0-release"
 $script:CurrentLang = "PT"
@@ -633,6 +701,7 @@ function Show-InstallationSuccessDialog {
         $this.Activate()
     })
 
+    Apply-DpiScaling -Form $succForm
     if ($form -and $form.Visible) {
         [void]$succForm.ShowDialog($form)
     }
@@ -830,6 +899,7 @@ function Show-FriendlyErrorDialog {
     $btnOk.Add_Click({ $errForm.Close() })
     [void]$errForm.Controls.Add($btnOk)
 
+    Apply-DpiScaling -Form $errForm
     [void]$errForm.ShowDialog()
 }
 
@@ -964,6 +1034,7 @@ function Show-SystemDiagnosisDialog {
     $btnDiagClose.Add_Click({ $diagForm.Close() })
     [void]$diagForm.Controls.Add($btnDiagClose)
 
+    Apply-DpiScaling -Form $diagForm
     [void]$diagForm.ShowDialog()
 }
 
@@ -2169,11 +2240,12 @@ $gameList.SmallImageList = $imageList
 [void]$gameList.Columns.Add("API / Arq", 90)
 [void]$gameList.Columns.Add("Modo / Status", 130)
 $gameList.Add_Resize({
+    $k = $script:DpiScale
     $avail = $gameList.ClientSize.Width
-    if ($avail -gt 320) {
-        $gameList.Columns[1].Width = 90
-        $gameList.Columns[2].Width = 130
-        $gameList.Columns[0].Width = [Math]::Max(140, $avail - 225)
+    if ($avail -gt (320 * $k)) {
+        $gameList.Columns[1].Width = [int](90 * $k)
+        $gameList.Columns[2].Width = [int](130 * $k)
+        $gameList.Columns[0].Width = [Math]::Max([int](140 * $k), $avail - [int](225 * $k))
     }
 })
 try {
@@ -2917,5 +2989,6 @@ if (-not $env:DLSS5_HEADLESS) {
         $this.Activate()
         $this.BringToFront()
     })
+    Apply-DpiScaling -Form $form
     [void][System.Windows.Forms.Application]::Run($form)
 }
