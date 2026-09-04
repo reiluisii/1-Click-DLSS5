@@ -42,3 +42,5 @@ user-payload-*/
 test_*.ps1
 test_*.py
 scratch/
+core/assets/config.json
+core/assets/games_cache.json

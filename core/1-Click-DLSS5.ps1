@@ -36,8 +36,7 @@ public class DLSS5DpiHelper {
 catch {}
 
 # --- CONFIGURACOES GLOBAIS ---
-$script:Version = "2.6.0-release"
-$script:CurrentLang = "PT"
+$script:Version = "2.7.0-beta"
 $script:AddOnName = "renodx-dlss5.addon64"
 $script:StateName = "_dlss5_install_state.json"
 $script:BackupName = "_DLSS5_Backup"
@@ -46,12 +45,19 @@ $script:CurrentDetectedUpscaler = "UNIVERSAL_FEEDER"
 $script:SelectedMode = "AUTO"
 $script:CurrentGameLibrary = @()
 
+if (-not $PSScriptRoot) {
+    if ($MyInvocation.MyCommand.Path) { $PSScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path }
+    else { $PSScriptRoot = (Get-Location).Path }
+}
+
 $script:PayloadFolder = Join-Path $PSScriptRoot "payload"
 $script:IconPath = Join-Path $PSScriptRoot "assets\icon.ico"
 if (-not (Test-Path -LiteralPath $script:IconPath -PathType Leaf)) {
     $script:IconPath = Join-Path $PSScriptRoot "assets\logo.ico"
 }
 $script:TranslationsPath = Join-Path $PSScriptRoot "assets\translations.json"
+$script:ConfigPath = Join-Path $PSScriptRoot "assets\config.json"
+$script:CachePath = Join-Path $PSScriptRoot "assets\games_cache.json"
 $script:LogFilePath = Join-Path $PSScriptRoot "1-Click-DLSS5.log"
 
 $script:Translations = $null
@@ -63,24 +69,91 @@ if (Test-Path -LiteralPath $script:TranslationsPath -PathType Leaf) {
     catch {}
 }
 
-# --- INICIALIZA  O DE TELEMETRIA E LOG CONT NUO ---
+function Get-SystemDefaultLanguage {
+    try {
+        $uiCulture = [System.Globalization.CultureInfo]::CurrentUICulture.TwoLetterISOLanguageName.ToUpper()
+        $supported = @("PT", "EN", "ES", "DE", "FR", "IT", "JA", "ZH", "RU", "KO")
+        if ($supported -contains $uiCulture) {
+            return $uiCulture
+        }
+    }
+    catch {}
+    return "EN"
+}
+
+function Get-AppConfig {
+    $defaultConfig = [pscustomobject]@{
+        Language             = "AUTO"
+        AutoScanOnStartup    = $false
+        ScanDrives           = "ALL"
+        LastSelectedGamePath = ""
+        CustomGamePaths      = @()
+    }
+    if (Test-Path -LiteralPath $script:ConfigPath -PathType Leaf) {
+        try {
+            $raw = [System.IO.File]::ReadAllText($script:ConfigPath, [System.Text.Encoding]::UTF8)
+            $cfg = $raw | ConvertFrom-Json
+            if ($cfg) {
+                if ($null -eq $cfg.Language) { $cfg | Add-Member -NotePropertyName "Language" -NotePropertyValue "AUTO" }
+                if ($null -eq $cfg.AutoScanOnStartup) { $cfg | Add-Member -NotePropertyName "AutoScanOnStartup" -NotePropertyValue $false }
+                if ($null -eq $cfg.ScanDrives) { $cfg | Add-Member -NotePropertyName "ScanDrives" -NotePropertyValue "ALL" }
+                if ($null -eq $cfg.LastSelectedGamePath) { $cfg | Add-Member -NotePropertyName "LastSelectedGamePath" -NotePropertyValue "" }
+                if ($null -eq $cfg.CustomGamePaths) { $cfg | Add-Member -NotePropertyName "CustomGamePaths" -NotePropertyValue @() }
+                return $cfg
+            }
+        }
+        catch {}
+    }
+    return $defaultConfig
+}
+
+function Save-AppConfig {
+    param([pscustomobject]$Config = $null)
+    if ($null -eq $Config) { $Config = $script:AppConfig }
+    try {
+        $json = $Config | ConvertTo-Json -Depth 5
+        $utf8WithBom = [System.Text.Encoding]::UTF8
+        [System.IO.File]::WriteAllText($script:ConfigPath, $json, $utf8WithBom)
+    }
+    catch {}
+}
+
+$script:AppConfig = Get-AppConfig
+if ($script:AppConfig.Language -and $script:AppConfig.Language -ne "AUTO") {
+    $script:CurrentLang = $script:AppConfig.Language
+}
+else {
+    $script:CurrentLang = Get-SystemDefaultLanguage
+}
+
+# --- SISTEMA AVANCADO DE TELEMETRIA, HARDWARE E LOG FORENSE CONTINUO ---
+$script:LogSyncRoot = New-Object object
+
 function Write-Status {
     param(
         [Parameter(Mandatory = $true)][string]$Message,
         [Parameter(Mandatory = $false)][string]$Level = "INFO",
         [Parameter(Mandatory = $false)][string]$Code = "",
         [Parameter(Mandatory = $false)][string]$Cause = "",
-        [Parameter(Mandatory = $false)][string]$Fix = ""
+        [Parameter(Mandatory = $false)][string]$Fix = "",
+        [Parameter(Mandatory = $false)][string]$Details = ""
     )
-    $ts = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    $ts = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss.fff")
     $logLine = "[$ts] [$Level] $Message"
     if ($Code) { $logLine = $logLine + " [CODE: $Code]" }
     if ($Cause) { $logLine = $logLine + " [CAUSA: $Cause]" }
     if ($Fix) { $logLine = $logLine + " [SOLUCAO: $Fix]" }
+    if ($Details) { $logLine = $logLine + "`r`n   " + ($Details.TrimEnd() -replace "`r?`n", "`r`n   ") }
 
     try {
-        $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-        [System.IO.File]::AppendAllText($script:LogFilePath, $logLine + "`r`n", $utf8NoBom)
+        [System.Threading.Monitor]::Enter($script:LogSyncRoot)
+        try {
+            $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+            [System.IO.File]::AppendAllText($script:LogFilePath, $logLine + "`r`n", $utf8NoBom)
+        }
+        finally {
+            [System.Threading.Monitor]::Exit($script:LogSyncRoot)
+        }
     }
     catch {}
 
@@ -100,41 +173,140 @@ function Write-Status {
     }
 }
 
-function Init-SystemTelemetryLog {
-    if (-not (Test-Path -LiteralPath $script:LogFilePath -PathType Leaf)) {
-        $sysInfo = "================================================================================`r`n"
-        $sysInfo = $sysInfo + "   1 CLICK DLSS 5 v$($script:Version)   NEURAL CONTROL CENTER LOG DE TELEMETRIA`r`n"
-        $sysInfo = $sysInfo + "   Iniciado em: $((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))`r`n"
-        $sysInfo = $sysInfo + "================================================================================`r`n"
-        try {
-            $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
-            if ($os) { $sysInfo = $sysInfo + "OS: $($os.Caption) ($($os.Version) Build $($os.BuildNumber))`r`n" }
-            $gpus = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue
-            if ($gpus) {
-                foreach ($g in $gpus) {
-                    $sysInfo = $sysInfo + "GPU: $($g.Name) (Driver: $($g.DriverVersion))`r`n"
+function Get-FormattedTelemetryBanner {
+    param([string]$Version = "2.7.0-beta")
+    $sb = [System.Text.StringBuilder]::new()
+    $ts = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss.fff")
+    
+    [void]$sb.AppendLine("================================================================================")
+    [void]$sb.AppendLine("   1 CLICK DLSS 5 v$Version   NEURAL CONTROL CENTER LOG DE TELEMETRIA")
+    [void]$sb.AppendLine("   Sessao iniciada em: $ts")
+    [void]$sb.AppendLine("================================================================================")
+    
+    try {
+        # 1. Sistema Operacional & Runtimes
+        $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+        $dispVer = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -ErrorAction SilentlyContinue).DisplayVersion
+        $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        $adminStr = if ($isAdmin) { "SIM (Elevated Administrator)" } else { "NAO (Standard User)" }
+        
+        $uptimeStr = "N/A"
+        if ($os -and $os.LastBootUpTime) {
+            $uptime = (Get-Date) - $os.LastBootUpTime
+            $uptimeStr = "$($uptime.Days)d $($uptime.Hours)h $($uptime.Minutes)m $($uptime.Seconds)s"
+        }
+        
+        $osArch = if ($os.OSArchitecture) { $os.OSArchitecture } else { "64-bit" }
+        [void]$sb.AppendLine("[SISTEMA OPERACIONAL & RUNTIME]")
+        [void]$sb.AppendLine("OS: $($os.Caption) $($dispVer) (Versao: $($os.Version) | Build: $($os.BuildNumber) | Arquitetura: $osArch)")
+        [void]$sb.AppendLine("Uptime do Sistema: $uptimeStr | Privilegios de Administrador: $adminStr")
+        [void]$sb.AppendLine("PowerShell Runtime: $($PSVersionTable.PSVersion) | CLR Runtime: $($PSVersionTable.CLRVersion)")
+        [void]$sb.AppendLine("Cultura do Sistema: $([System.Globalization.CultureInfo]::CurrentUICulture.Name) (ISO: $([System.Globalization.CultureInfo]::CurrentUICulture.TwoLetterISOLanguageName.ToUpper())) | Idioma App: $script:CurrentLang")
+        [void]$sb.AppendLine("Diretorio de Execucao: $PSScriptRoot | Log: $script:LogFilePath")
+        [void]$sb.AppendLine("")
+        
+        # 2. Processador (CPU)
+        $cpu = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue
+        if ($cpu) {
+            $cpuClock = if ($cpu.MaxClockSpeed) { "$($cpu.MaxClockSpeed) MHz" } else { "N/A" }
+            [void]$sb.AppendLine("[PROCESSADOR (CPU)]")
+            [void]$sb.AppendLine("Modelo: $($cpu.Name)")
+            [void]$sb.AppendLine("Nucleos Fisicos: $($cpu.NumberOfCores) | Threads Logicos: $($cpu.NumberOfLogicalProcessors) | Clock Maximo: $cpuClock")
+            [void]$sb.AppendLine("")
+        }
+        
+        # 3. Placas de Video (GPU)
+        $gpus = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue)
+        if ($gpus.Count -gt 0) {
+            [void]$sb.AppendLine("[PLACA DE VIDEO (GPU)]")
+            $gpuIdx = 1
+            foreach ($g in $gpus) {
+                $vramGb = if ($g.AdapterRAM -and $g.AdapterRAM -gt 0) { [Math]::Round($g.AdapterRAM / 1GB, 2) } else { "N/A" }
+                $driverDate = if ($g.DriverDate) { ($g.DriverDate).ToString("yyyy-MM-dd") } else { "N/A" }
+                $gpuType = "GPU Dedicada (dGPU)"
+                if ($g.Name -match '(?i)(intel.*graphics|amd.*radeon\(tm\)\s+graphics|vega|uhd|iris|apu)') {
+                    $gpuType = "GPU Integrada (iGPU)"
                 }
+                [void]$sb.AppendLine("GPU $gpuIdx [$gpuType]: $($g.Name)")
+                [void]$sb.AppendLine("   Driver: $($g.DriverVersion) ($driverDate) | VRAM: $vramGb GB")
+                $gpuIdx++
             }
-            $cpu = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue
-            if ($cpu) { $sysInfo = $sysInfo + "CPU: $($cpu.Name)`r`n" }
+            $hags = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" -ErrorAction SilentlyContinue).HwSchMode
+            $hagsStr = switch ($hags) { 2 { "ATIVADO (Modo 2)" } 1 { "DESATIVADO (Modo 1)" } default { "Nao suportado ou Padrao do Sistema" } }
+            [void]$sb.AppendLine("Hardware GPU Scheduling (HAGS): $hagsStr")
+            [void]$sb.AppendLine("")
         }
-        catch {}
-        $sysInfo = $sysInfo + "================================================================================`r`n`r`n"
-        try { 
-            $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-            [System.IO.File]::WriteAllText($script:LogFilePath, $sysInfo, $utf8NoBom) 
+        
+        # 4. Memoria RAM & Armazenamento
+        if ($os) {
+            $ramTotalGb = [Math]::Round($os.TotalVisibleMemorySize / 1MB, 2)
+            $ramFreeGb = [Math]::Round($os.FreePhysicalMemory / 1MB, 2)
+            $ramPctFree = if ($ramTotalGb -gt 0) { [Math]::Round(($ramFreeGb / $ramTotalGb) * 100, 1) } else { 0 }
+            $virtTotalGb = [Math]::Round($os.TotalVirtualMemorySize / 1MB, 2)
+            $virtFreeGb = [Math]::Round($os.FreeVirtualMemory / 1MB, 2)
+            
+            [void]$sb.AppendLine("[MEMORIA RAM & ARMAZENAMENTO]")
+            [void]$sb.AppendLine("Memoria RAM Fisica Total: $ramTotalGb GB | Disponivel: $ramFreeGb GB ($ramPctFree% livre)")
+            [void]$sb.AppendLine("Memoria Virtual Total: $virtTotalGb GB | Disponivel: $virtFreeGb GB")
+            [void]$sb.AppendLine("Unidades de Armazenamento Conectadas:")
+            $drives = [System.IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady }
+            foreach ($d in $drives) {
+                $totalGb = [Math]::Round($d.TotalSize / 1GB, 1)
+                $freeGb = [Math]::Round($d.TotalFreeSpace / 1GB, 1)
+                $pct = if ($totalGb -gt 0) { [Math]::Round(($freeGb / $totalGb) * 100, 1) } else { 0 }
+                $label = if ($d.VolumeLabel) { "[$($d.VolumeLabel)]" } else { "[Sem Rotulo]" }
+                [void]$sb.AppendLine(" - $($d.Name) $label Formato: $($d.DriveFormat) | Total: $totalGb GB | Livre: $freeGb GB ($pct% livre)")
+            }
+            [void]$sb.AppendLine("")
         }
-        catch {}
+        
+        # 5. Monitores & Telas
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
+        $screens = [System.Windows.Forms.Screen]::AllScreens
+        if ($screens) {
+            [void]$sb.AppendLine("[MONITORES E EXIBICAO]")
+            $scrIdx = 1
+            foreach ($s in $screens) {
+                $primStr = if ($s.Primary) { " (Monitor Principal)" } else { "" }
+                [void]$sb.AppendLine("Monitor ${scrIdx}${primStr} - Resolucao: $($s.Bounds.Width)x$($s.Bounds.Height)")
+                $scrIdx++
+            }
+            [void]$sb.AppendLine("")
+        }
     }
+    catch {
+        [void]$sb.AppendLine("Aviso ao coletar telemetria estendida: $($_.Exception.Message)")
+    }
+    
+    [void]$sb.AppendLine("================================================================================")
+    return $sb.ToString()
+}
+
+function Init-SystemTelemetryLog {
+    try {
+        $banner = Get-FormattedTelemetryBanner -Version $script:Version
+        $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+        [System.Threading.Monitor]::Enter($script:LogSyncRoot)
+        try {
+            [System.IO.File]::AppendAllText($script:LogFilePath, $banner + "`r`n", $utf8NoBom)
+        }
+        finally {
+            [System.Threading.Monitor]::Exit($script:LogSyncRoot)
+        }
+    }
+    catch {}
 }
 Init-SystemTelemetryLog
 
 function Open-LogFile {
+    Write-Status -Message "[USER] Solicitada abertura visual do arquivo de telemetria/log via Bloco de Notas: '$script:LogFilePath'" -Level "INFO"
     if (Test-Path -LiteralPath $script:LogFilePath -PathType Leaf) {
         Start-Process "notepad.exe" -ArgumentList "`"$script:LogFilePath`""
     }
     else {
-        [System.Windows.Forms.MessageBox]::Show("Nenhum log gerado ainda.", "1 Click DLSS 5", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        $d = Get-Dict -Lang $script:CurrentLang
+        $msg = if ($d.NoLogYet) { $d.NoLogYet } else { "No log generated yet." }
+        [System.Windows.Forms.MessageBox]::Show($msg, "1 Click DLSS 5", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
     }
 }
 
@@ -237,7 +409,66 @@ function Resolve-GameTarget {
     }
 
     if (-not $exePath) {
-        # 1. Prioridade M xima: Execut veis em subpastas de engine 64-bit conhecidas
+        # 0. Prioridade Especial: Executaveis de Emuladores Conhecidos (PS1, PS2, PS3, PS4, Nintendo, Xbox, Retro)
+        $emulatorPatterns = @(
+            # PlayStation 1 (DuckStation, ePSXe, Beetle, Mednafen)
+            '^(duckstation.*|epsxe.*|mednafen.*)$',
+            # PlayStation 2 (PCSX2)
+            '^(pcsx2.*)$',
+            # PlayStation 3 (RPCS3)
+            '^(rpcs3.*)$',
+            # PlayStation 4 & Vita (shadPS4, Vita3K)
+            '^(shadps4.*|vita3k.*)$',
+            # Nintendo Switch (Ryujinx, Yuzu, Suyu, Eden, Torzu)
+            '^(ryujinx.*|yuzu.*|suyu.*|eden.*|torzu.*)$',
+            # Nintendo Wii & GameCube (Dolphin)
+            '^(dolphin.*)$',
+            # Nintendo Wii U (Cemu)
+            '^(cemu.*)$',
+            # Nintendo 3DS (Citra, Lime3DS, Azahar)
+            '^(citra.*|lime3ds.*|azahar.*)$',
+            # Nintendo DS & GBA (melonDS, mGBA, DeSmuME, No$GBA, VBA)
+            '^(melonds.*|mgba.*|desmume.*|no\$gba.*|vba.*)$',
+            # Nintendo Retro (Project64, Snes9x, Mesen, FCEUX, Nestopia)
+            '^(project64.*|snes9x.*|mesen.*|fceux.*|nestopia.*)$',
+            # Xbox & Xbox 360 (Xenia, Xenia-Canary, Cxbx-Reloaded)
+            '^(xenia.*|cxbx.*)$',
+            # PSP, Sega, Arcade, Multi-sistema (PPSSPP, Flycast, Redream, RetroArch, MAME, ScummVM)
+            '^(ppsspp.*|flycast.*|redream.*|retroarch.*|mame.*|scummvm.*)$'
+        )
+
+        $foundEmu = $null
+        foreach ($pat in $emulatorPatterns) {
+            $matches = @($filtered | Where-Object { $_.BaseName.ToLower() -match $pat -and (Test-ValidPe -Path $_.FullName) } | Sort-Object -Property Length -Descending)
+            if ($matches.Count -gt 0) {
+                $x64Match = $matches | Where-Object { (Get-PeArchitecture -Path $_.FullName) -eq "X64" } | Select-Object -First 1
+                if ($x64Match) { $foundEmu = $x64Match.FullName; break }
+                $foundEmu = $matches[0].FullName
+                break
+            }
+        }
+        if ($foundEmu) {
+            $exePath = $foundEmu
+            $emuType = if ($foundEmu -match 'pcsx2') { 'PlayStation 2 (PCSX2)' } `
+                       elseif ($foundEmu -match 'rpcs3') { 'PlayStation 3 (RPCS3)' } `
+                       elseif ($foundEmu -match 'shadps4') { 'PlayStation 4 (shadPS4)' } `
+                       elseif ($foundEmu -match 'vita3k') { 'PlayStation Vita (Vita3K)' } `
+                       elseif ($foundEmu -match 'duckstation|epsxe|mednafen') { 'PlayStation 1 (DuckStation/ePSXe)' } `
+                       elseif ($foundEmu -match 'dolphin') { 'Nintendo GameCube/Wii (Dolphin)' } `
+                       elseif ($foundEmu -match 'cemu') { 'Nintendo Wii U (Cemu)' } `
+                       elseif ($foundEmu -match 'ryujinx|yuzu|suyu|eden|torzu') { 'Nintendo Switch' } `
+                       elseif ($foundEmu -match 'citra|lime3ds|azahar') { 'Nintendo 3DS' } `
+                       elseif ($foundEmu -match 'melonds|desmume') { 'Nintendo DS' } `
+                       elseif ($foundEmu -match 'xenia') { 'Xbox 360 (Xenia)' } `
+                       elseif ($foundEmu -match 'ppsspp') { 'Sony PSP (PPSSPP)' } `
+                       elseif ($foundEmu -match 'retroarch') { 'RetroArch (Multi-Core)' } `
+                       else { 'Emulador Conhecido' }
+            Write-Status -Message "[RESOLVE] Alvo detectado como Emulador compativel: $(Split-Path -Leaf $foundEmu) | Plataforma: $emuType" -Level "INFO"
+        }
+    }
+
+    if (-not $exePath) {
+        # 1. Prioridade Maxima: Executaveis em subpastas de engine 64-bit conhecidas
         # (Bin64 [BeamNG, CryEngine], bin\x64 [Cyberpunk, Witcher], binaries\win64 [Unreal], x64, bin\win64)
         $known64Subfolders = '\\(binaries\\win64|bin64|bin\\x64|bin\\x64_dx12|bin\\win64|x64)\\'
         $found64Subdir = @($filtered | Where-Object {
@@ -247,34 +478,36 @@ function Resolve-GameTarget {
         if ($found64Subdir.Count -gt 0) {
             $exePath = $found64Subdir[0].FullName
         }
-        else {
-            # 2. Execut veis com sufixo x64 (ex: *.x64.exe, *64.exe)
-            $foundX64Named = @($filtered | Where-Object {
-                    $_.Name -imatch '(\.x64\.exe|_x64\.exe|win64.*\.exe)$' -and (Test-ValidPe -Path $_.FullName) -and ((Get-PeArchitecture -Path $_.FullName) -eq "X64")
-                } | Sort-Object -Property Length -Descending)
+    }
 
-            if ($foundX64Named.Count -gt 0) {
-                $exePath = $foundX64Named[0].FullName
-            }
-            else {
-                # 3. Execut veis na raiz vs subpastas: se o da raiz for 32-bit (X86), mas existir um 64-bit em subpasta, preferir o 64-bit
-                $rootExes = @($filtered | Where-Object { $_.Directory.FullName -ieq $folder -and (Test-ValidPe -Path $_.FullName) } | Sort-Object -Property Length -Descending)
-                $allX64 = @($filtered | Where-Object { (Test-ValidPe -Path $_.FullName) -and ((Get-PeArchitecture -Path $_.FullName) -eq "X64") } | Sort-Object -Property Length -Descending)
+    if (-not $exePath) {
+        # 2. Executaveis com sufixo x64 (ex: *.x64.exe, *64.exe)
+        $foundX64Named = @($filtered | Where-Object {
+                $_.Name -imatch '(\.x64\.exe|_x64\.exe|win64.*\.exe)$' -and (Test-ValidPe -Path $_.FullName) -and ((Get-PeArchitecture -Path $_.FullName) -eq "X64")
+            } | Sort-Object -Property Length -Descending)
 
-                if ($rootExes.Count -gt 0 -and ((Get-PeArchitecture -Path $rootExes[0].FullName) -eq "X64")) {
-                    $exePath = $rootExes[0].FullName
-                }
-                elseif ($allX64.Count -gt 0) {
-                    $exePath = $allX64[0].FullName
-                }
-                elseif ($rootExes.Count -gt 0) {
-                    $exePath = $rootExes[0].FullName
-                }
-                elseif ($filtered.Count -gt 0) {
-                    $largest = $filtered | Sort-Object -Property Length -Descending | Select-Object -First 1
-                    $exePath = $largest.FullName
-                }
-            }
+        if ($foundX64Named.Count -gt 0) {
+            $exePath = $foundX64Named[0].FullName
+        }
+    }
+
+    if (-not $exePath) {
+        # 3. Executaveis na raiz vs subpastas: se o da raiz for 32-bit (X86), mas existir um 64-bit em subpasta, preferir o 64-bit
+        $rootExes = @($filtered | Where-Object { $_.Directory.FullName -ieq $folder -and (Test-ValidPe -Path $_.FullName) } | Sort-Object -Property Length -Descending)
+        $allX64 = @($filtered | Where-Object { (Test-ValidPe -Path $_.FullName) -and ((Get-PeArchitecture -Path $_.FullName) -eq "X64") } | Sort-Object -Property Length -Descending)
+
+        if ($rootExes.Count -gt 0 -and ((Get-PeArchitecture -Path $rootExes[0].FullName) -eq "X64")) {
+            $exePath = $rootExes[0].FullName
+        }
+        elseif ($allX64.Count -gt 0) {
+            $exePath = $allX64[0].FullName
+        }
+        elseif ($rootExes.Count -gt 0) {
+            $exePath = $rootExes[0].FullName
+        }
+        elseif ($filtered.Count -gt 0) {
+            $largest = $filtered | Sort-Object -Property Length -Descending | Select-Object -First 1
+            $exePath = $largest.FullName
         }
     }
 
@@ -424,7 +657,8 @@ function Detect-GameUpscalerType {
 }
 
 function Test-GameDlss5Installed {
-    param([Parameter(Mandatory = $true)][string]$GameFolder)
+    param($GameFolder = "")
+    if ([string]::IsNullOrWhiteSpace($GameFolder) -or (-not (Test-Path -LiteralPath $GameFolder -PathType Container))) { return $false }
     $stateFiles = @("_dlss5_install_state.json", "_1click_dlss5_state.json", "_dlss5_easy_installer_state.json")
     foreach ($sf in $stateFiles) {
         if (Test-Path -LiteralPath (Join-Path $GameFolder $sf) -PathType Leaf) { return $true }
@@ -440,6 +674,9 @@ function Get-Dict {
     param([string]$Lang)
     if ($script:Translations -and $script:Translations.$Lang) {
         return $script:Translations.$Lang
+    }
+    if ($script:Translations -and $script:Translations.EN) {
+        return $script:Translations.EN
     }
     if ($script:Translations -and $script:Translations.PT) {
         return $script:Translations.PT
@@ -506,6 +743,110 @@ function Get-Dict {
     }
 }
 
+
+function Get-GamesCache {
+    $list = New-Object System.Collections.Generic.List[pscustomobject]
+    $seenPaths = New-Object System.Collections.Generic.HashSet[string]
+    
+    if (Test-Path -LiteralPath $script:CachePath -PathType Leaf) {
+        try {
+            $raw = [System.IO.File]::ReadAllText($script:CachePath, [System.Text.Encoding]::UTF8)
+            $cachedList = @($raw | ConvertFrom-Json)
+            if ($cachedList) {
+                foreach ($c in $cachedList) {
+                    if ($null -eq $c -or -not (Test-Path -LiteralPath $c.Path -PathType Container)) {
+                        continue
+                    }
+                    $norm = $c.Path.ToLower()
+                    if ($seenPaths.Contains($norm)) { continue }
+                    [void]$seenPaths.Add($norm)
+                    
+                    $icon = $null
+                    try {
+                        $resolved = Resolve-GameTarget -TargetPath $c.Path
+                        if ($resolved -and $resolved.Icon) { $icon = $resolved.Icon }
+                    } catch {}
+                    
+                    $isInstalled = Test-GameDlss5Installed -GameFolder $c.Path
+                    
+                    [void]$list.Add([pscustomobject]@{
+                        Order       = $c.Order
+                        Name        = $c.Name
+                        Path        = $c.Path
+                        Api         = $c.Api
+                        Upscaler    = $c.Upscaler
+                        IsInstalled = $isInstalled
+                        Icon        = $icon
+                        ExeName     = $c.ExeName
+                    })
+                }
+            }
+        }
+        catch {}
+    }
+    
+    if ($script:AppConfig.CustomGamePaths) {
+        foreach ($cp in $script:AppConfig.CustomGamePaths) {
+            if (Test-Path -LiteralPath $cp -PathType Container) {
+                $norm = $cp.ToLower()
+                if (-not $seenPaths.Contains($norm)) {
+                    [void]$seenPaths.Add($norm)
+                    try {
+                        $resolved = Resolve-GameTarget -TargetPath $cp
+                        if ($resolved -and $resolved.Executable) {
+                            $api = Detect-GameGraphicsApi -TargetExe $resolved.Executable -GameFolder $resolved.InstallFolder
+                            $upscaler = Detect-GameUpscalerType -GameFolder $resolved.InstallFolder -GameRoot $resolved.Root
+                            $isInstalled = Test-GameDlss5Installed -GameFolder $resolved.InstallFolder
+                            [void]$list.Add([pscustomobject]@{
+                                Order       = 1
+                                Name        = (Split-Path -Leaf $cp)
+                                Path        = $cp
+                                Api         = "$api ($($resolved.Architecture))"
+                                Upscaler    = $upscaler
+                                IsInstalled = $isInstalled
+                                Icon        = $resolved.Icon
+                                ExeName     = $resolved.ExeName
+                            })
+                        }
+                    } catch {}
+                }
+            }
+        }
+    }
+    
+    return ,@($list | Sort-Object -Property Order, Name)
+}
+
+function Save-GamesCache {
+    param($Games)
+    if ($null -eq $Games) { return }
+    try {
+        $storable = @()
+        foreach ($g in @($Games)) {
+            if (-not $g -or -not $g.Path) { continue }
+            $storable += [pscustomobject]@{
+                Order       = $g.Order
+                Name        = $g.Name
+                Path        = $g.Path
+                Api         = $g.Api
+                Upscaler    = $g.Upscaler
+                IsInstalled = $g.IsInstalled
+                ExeName     = $g.ExeName
+            }
+        }
+        $json = ""
+        if ($storable.Count -eq 1) {
+            $json = "[`r`n" + ($storable[0] | ConvertTo-Json -Depth 4) + "`r`n]"
+        }
+        else {
+            $json = $storable | ConvertTo-Json -Depth 4
+        }
+        $utf8WithBom = [System.Text.Encoding]::UTF8
+        [System.IO.File]::WriteAllText($script:CachePath, $json, $utf8WithBom)
+    }
+    catch {}
+}
+
 # --- MODAL MODERNO DE SUCESSO DA INSTALA  O ---
 function Show-InstallationSuccessDialog {
     param(
@@ -514,12 +855,14 @@ function Show-InstallationSuccessDialog {
         [Parameter(Mandatory = $true)][string]$TargetExePath
     )
     $d = Get-Dict -Lang $script:CurrentLang
+    $isPt = ($script:CurrentLang -eq "PT")
     Write-Status -Message "DLSS 5 instalado com sucesso em $GameName [$ModeName]!" -Level "OK"
+    Write-Status -Message "[UI] Dialogo de instalacao bem-sucedida exibido ao usuario: Jogo='$GameName' | Modo='$ModeName' | Executavel='$TargetExePath'" -Level "OK"
 
     if ($env:DLSS5_HEADLESS) { return }
 
     $succForm = New-Object System.Windows.Forms.Form
-    $succForm.Text = "Instalacao Concluida com Sucesso - 1 Click DLSS 5"
+    $succForm.Text = if ($d.SuccessTitle) { $d.SuccessTitle } else { "Installation Successfully Completed - 1 Click DLSS 5" }
     $succForm.Size = New-Object System.Drawing.Size(640, 430)
     $succForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
     $succForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
@@ -531,7 +874,7 @@ function Show-InstallationSuccessDialog {
     $succForm.TopMost = $true
 
     $lblBigTitle = New-Object System.Windows.Forms.Label
-    $lblBigTitle.Text = "[OK] DLSS 5 INJETADO COM SUCESSO!"
+    $lblBigTitle.Text = if ($d.SuccessTitle) { "[OK] " + $d.SuccessTitle.ToUpper() } else { "[OK] DLSS 5 INJECTED SUCCESSFULLY!" }
     $lblBigTitle.Location = New-Object System.Drawing.Point(20, 16)
     $lblBigTitle.Size = New-Object System.Drawing.Size(585, 32)
     $lblBigTitle.Font = New-Object System.Drawing.Font("Segoe UI Bold", 13)
@@ -545,7 +888,7 @@ function Show-InstallationSuccessDialog {
     [void]$succForm.Controls.Add($infoBox)
 
     $lblGame = New-Object System.Windows.Forms.Label
-    $lblGame.Text = "Jogo: " + $GameName
+    $lblGame.Text = (if ($d.ColGame) { $d.ColGame } else { "Game" }) + ": " + $GameName
     $lblGame.Location = New-Object System.Drawing.Point(15, 12)
     $lblGame.Size = New-Object System.Drawing.Size(555, 22)
     $lblGame.Font = New-Object System.Drawing.Font("Segoe UI Bold", 10.5)
@@ -553,7 +896,7 @@ function Show-InstallationSuccessDialog {
     [void]$infoBox.Controls.Add($lblGame)
 
     $lblMode = New-Object System.Windows.Forms.Label
-    $lblMode.Text = "Modo: " + $ModeName
+    $lblMode.Text = (if ($d.ColMode) { $d.ColMode } else { "Mode" }) + ": " + $ModeName
     $lblMode.Location = New-Object System.Drawing.Point(15, 38)
     $lblMode.Size = New-Object System.Drawing.Size(555, 20)
     $lblMode.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9.5)
@@ -561,7 +904,7 @@ function Show-InstallationSuccessDialog {
     [void]$infoBox.Controls.Add($lblMode)
 
     $lblFilters = New-Object System.Windows.Forms.Label
-    $lblFilters.Text = "Filtros Inclusos: CAS (Nitidez) + Vibrance (Cores) + SMAA (AA) + Splitscreen"
+    $lblFilters.Text = if ($isPt) { "Filtros Inclusos: CAS (Nitidez) + Vibrance (Cores) + SMAA (AA) + Splitscreen" } else { "Included Filters: CAS (Sharpness) + Vibrance (Colors) + SMAA (AA) + Splitscreen" }
     $lblFilters.Location = New-Object System.Drawing.Point(15, 62)
     $lblFilters.Size = New-Object System.Drawing.Size(555, 20)
     $lblFilters.Font = New-Object System.Drawing.Font("Segoe UI", 9)
@@ -569,7 +912,7 @@ function Show-InstallationSuccessDialog {
     [void]$infoBox.Controls.Add($lblFilters)
 
     $lblHotkey = New-Object System.Windows.Forms.Label
-    $lblHotkey.Text = "Atalho de Comparacao: Tecla [End] alterna todos os efeitos instantaneamente no jogo!"
+    $lblHotkey.Text = if ($isPt) { "Atalho de Comparacao: Tecla [End] alterna todos os efeitos instantaneamente no jogo!" } else { "Comparison Hotkey: Press [End] in-game to toggle all effects instantly!" }
     $lblHotkey.Location = New-Object System.Drawing.Point(15, 86)
     $lblHotkey.Size = New-Object System.Drawing.Size(555, 20)
     $lblHotkey.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9)
@@ -583,19 +926,19 @@ function Show-InstallationSuccessDialog {
     [void]$infoBox.Controls.Add($lblSep)
 
     $lblInstTitle = New-Object System.Windows.Forms.Label
-    $lblInstTitle.Text = "[INFO] COMO APROVEITAR NO JOGO:"
+    $lblInstTitle.Text = if ($isPt) { "[INFO] COMO APROVEITAR NO JOGO:" } else { "[INFO] HOW TO USE IN-GAME:" }
     $lblInstTitle.Location = New-Object System.Drawing.Point(15, 122)
     $lblInstTitle.Size = New-Object System.Drawing.Size(555, 20)
     $lblInstTitle.Font = New-Object System.Drawing.Font("Segoe UI Bold", 9)
     $lblInstTitle.ForeColor = [System.Drawing.Color]::FromArgb(255, 205, 90)
     [void]$infoBox.Controls.Add($lblInstTitle)
 
-    $instText = "No menu do jogo: Deixe o upscaler desligado. O DLSS 5 rodara na resolucao nativa com qualidade neural maxima!"
-    if ($ModeName -match 'DIRECT|Modo 1') {
-        $instText = "No menu de video do jogo: ATIVE o DLSS (Qualidade ou Desempenho). Pressione [Home] para abrir o painel neural."
+    $instText = if ($isPt) { "No menu do jogo: Deixe o upscaler desligado. O DLSS 5 rodara na resolucao nativa com qualidade neural maxima!" } else { "In game settings: Keep upscaler disabled. DLSS 5 will run at 100% native resolution with maximum neural clarity!" }
+    if ($ModeName -match 'DIRECT|Modo 1|Mode 1') {
+        $instText = if ($isPt) { "No menu de video do jogo: ATIVE o DLSS (Qualidade ou Desempenho). Pressione [Home] para abrir o painel neural." } else { "In game video settings: ENABLE DLSS (Quality or Performance). Press [Home] in-game for the neural overlay." }
     }
-    elseif ($ModeName -match 'OPTISCALER|Modo 2') {
-        $instText = "No menu de video do jogo: ATIVE o FSR 2 ou XeSS (Qualidade). O OptiScaler redirecionara para a IA DLSS 5."
+    elseif ($ModeName -match 'OPTISCALER|Modo 2|Mode 2') {
+        $instText = if ($isPt) { "No menu de video do jogo: ATIVE o FSR 2 ou XeSS (Qualidade). O OptiScaler redirecionara para a IA DLSS 5." } else { "In game video settings: ENABLE FSR 2 or XeSS (Quality). OptiScaler will redirect the pipeline to DLSS 5." }
     }
 
     $lblInstDesc = New-Object System.Windows.Forms.Label
@@ -608,24 +951,28 @@ function Show-InstallationSuccessDialog {
 
     # Botoes de Acao
     $btnLaunchNow = New-Object System.Windows.Forms.Button
-    $btnLaunchNow.Text = "[>] INICIAR JOGO AGORA"
+    $btnLaunchNow.Text = if ($d.BtnLaunchNow) { $d.BtnLaunchNow } else { "[>] LAUNCH GAME NOW" }
     $btnLaunchNow.Location = New-Object System.Drawing.Point(20, 305)
     $btnLaunchNow.Size = New-Object System.Drawing.Size(380, 50)
     $btnLaunchNow.Font = New-Object System.Drawing.Font("Segoe UI Bold", 11)
     Style-Button -Button $btnLaunchNow -BaseColor ([System.Drawing.Color]::FromArgb(0, 130, 230)) -HoverColor ([System.Drawing.Color]::FromArgb(20, 160, 255))
     $btnLaunchNow.Add_Click({
+            Write-Status -Message "[USER] Botao 'INICIAR JOGO AGORA' clicado no dialogo de sucesso para: '$TargetExePath'" -Level "INFO"
             $succForm.Close()
             Start-GameExecutable -ExecutablePath $TargetExePath
         })
     [void]$succForm.Controls.Add($btnLaunchNow)
 
     $btnClose = New-Object System.Windows.Forms.Button
-    $btnClose.Text = "Fechar"
+    $btnClose.Text = if ($d.BtnClose) { $d.BtnClose } else { "Close" }
     $btnClose.Location = New-Object System.Drawing.Point(415, 305)
     $btnClose.Size = New-Object System.Drawing.Size(190, 50)
     $btnClose.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 10)
     Style-Button -Button $btnClose -BaseColor ([System.Drawing.Color]::FromArgb(35, 55, 90)) -HoverColor ([System.Drawing.Color]::FromArgb(50, 75, 125))
-    $btnClose.Add_Click({ $succForm.Close() })
+    $btnClose.Add_Click({ 
+        Write-Status -Message "[USER] Botao 'FECHAR' clicado no dialogo de sucesso." -Level "INFO"
+        $succForm.Close() 
+    })
     [void]$succForm.Controls.Add($btnClose)
 
     $succForm.Add_Shown({
@@ -663,11 +1010,27 @@ function Resolve-IssueInOneClick {
         if (Test-Path -LiteralPath $folder) {
             Start-Process -FilePath "cmd.exe" -ArgumentList "/c attrib -r `"$folder\*.*`" /s /d" -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue
         }
+        # 3. Purgar sl.dlss_nr.dll conflitante e sanitizar pasta de backup se corrompida
+        $staleSl = Join-Path $folder "sl.dlss_nr.dll"
+        if (Test-Path -LiteralPath $staleSl -PathType Leaf) {
+            Remove-Item -LiteralPath $staleSl -Force -ErrorAction SilentlyContinue
+            Write-Status -Message "Auto-Fix: Removido sl.dlss_nr.dll incompativel com Streamline/DX12." -Level "OK"
+        }
+        $bDir = Join-Path $folder $script:BackupName
+        if (Test-Path -LiteralPath $bDir -PathType Container) {
+            foreach ($badFile in @("sl.dlss_nr.dll", "nvngx_dlssnr.dll", "renodx-dlss5.addon64")) {
+                $bBad = Join-Path $bDir $badFile
+                if (Test-Path -LiteralPath $bBad) { Remove-Item -LiteralPath $bBad -Force -ErrorAction SilentlyContinue }
+            }
+        }
 
-        # 3. Autocura preventiva de dependencias do executavel (libxess.dll, nvngx_dlss.dll, etc.)
+        # 4. Registra GPU dedicada de Alto Desempenho no Windows DirectX
+        Set-GameHighPerformanceGpuPreference -ExecutablePath $resolved.Executable
+
+        # 5. Autocura preventiva de dependencias do executavel (libxess.dll, nvngx_dlss.dll, etc.)
         Repair-GameCriticalDependencies -TargetFolder $folder -TargetExe $resolved.Executable
 
-        # 4. Executa a instalacao
+        # 6. Executa a instalacao
         Install-Dlss5 -TargetPath $TargetPath -SelectedMode $SelectedMode
         Write-Status -Message $d.AutoFixDone -Level "OK"
         return $true
@@ -682,33 +1045,41 @@ function Get-ErrorDiagnosis {
     param([System.Exception]$Ex, [string]$Context = "")
     $msg = $Ex.Message
     $code = "ERR_UNKNOWN"
-    $what = "Ocorreu um imprevisto ao executar a operacao ($Context)."
-    $cause = "Inconsistencia no sistema de arquivos ou configuracao de seguranca do Windows."
-    $fix = "1. Feche o jogo caso ele esteja aberto.`n2. Clique em '[ ] RESOLVER PROBLEMA EM 1 CLIQUE'.`n3. Ou execute como Administrador."
+    $isPt = ($script:CurrentLang -eq "PT")
 
-    if ($msg -match 'ERR_EXE_NOT_FOUND' -or $msg -match 'Nenhum executavel') {
+    $what = if ($isPt) { "Ocorreu um imprevisto ao executar a operacao ($Context)." } else { "An unexpected issue occurred during operation ($Context)." }
+    $cause = if ($isPt) { "Inconsistencia no sistema de arquivos ou configuracao de seguranca do Windows." } else { "File system restriction or Windows security configuration issue." }
+    $fix = if ($isPt) { "1. Feche o jogo caso ele esteja aberto.`n2. Clique em '[OK] RESOLVER PROBLEMA EM 1 CLIQUE'.`n3. Ou execute como Administrador." } else { "1. Close the game if running.`n2. Click '[OK] 1-CLICK AUTO-FIX' below.`n3. Or run 1-Click DLSS 5 as Administrator." }
+
+    if ($msg -match 'DX12 RHI' -or $msg -match 'graphics adapter' -or $msg -match 'ChooseAdapter' -or $msg -match 'D3D12 RHI') {
+        $code = "ERR_DX12_RHI"
+        $what = if ($isPt) { "O jogo falhou ao inicializar o adaptador grafico DirectX 12 (DX12 RHI)." } else { "The game failed to initialize the DirectX 12 graphics adapter (DX12 RHI)." }
+        $cause = if ($isPt) { "Conflito com plugin de Streamline incompativel ou selecao inadequada da GPU integrada (iGPU) pelo Windows 11." } else { "Conflict with incompatible Streamline plugin or Windows selecting integrated GPU (iGPU) on Ryzen processors." }
+        $fix = if ($isPt) { "1. Clique no botao '[OK] RESOLVER PROBLEMA EM 1 CLIQUE' abaixo para purgar arquivos conflitantes e forcar a GPU de Alto Desempenho.`n2. O 1-Click DLSS 5 configurara automaticamente o modo seguro com ganchos NGX puros." } else { "1. Click '[OK] 1-CLICK AUTO-FIX' below to purge conflicting files and force High-Performance GPU.`n2. 1-Click DLSS 5 will automatically configure safe NGX-only hooks." }
+    }
+    elseif ($msg -match 'ERR_EXE_NOT_FOUND' -or $msg -match 'Nenhum executavel' -or $msg -match 'No valid game') {
         $code = "ERR_EXE_NOT_FOUND"
-        $what = "Nenhum arquivo executavel (.exe) de jogo principal foi localizado na pasta selecionada."
-        $cause = "A pasta escolhida pode ser uma pasta vazia ou a pasta pai dos jogos."
-        $fix = "1. Clique em 'PROCURAR JOGO' e selecione a pasta exata onde o jogo esta instalado.`n2. Ou clique em 'ESCANEAR DISCOS' para localizar seus jogos instalados automaticamente."
+        $what = if ($isPt) { "Nenhum arquivo executavel (.exe) de jogo principal foi localizado na pasta selecionada." } else { "No valid game executable (.exe) was found in the selected folder." }
+        $cause = if ($isPt) { "A pasta escolhida pode ser uma pasta vazia ou a pasta pai dos jogos." } else { "The selected folder might be empty or a parent folder containing multiple games." }
+        $fix = if ($isPt) { "1. Clique em 'PROCURAR JOGO' e selecione a pasta exata onde o jogo esta instalado.`n2. Ou clique em 'ESCANEAR DISCOS' para localizar seus jogos instalados automaticamente." } else { "1. Click 'BROWSE GAME' and select the exact folder containing the game executable.`n2. Or click 'SCAN DRIVES' to detect installed games automatically." }
     }
     elseif ($msg -match 'UnauthorizedAccessException' -or $msg -match 'Acesso negado' -or $msg -match 'Access is denied') {
         $code = "ERR_PERM_DENIED"
-        $what = "O Windows bloqueou a gravacao ou modificacao de arquivos na pasta do jogo."
-        $cause = "Falta de privilegios de Administrador ou permissao 'Somente Leitura' na pasta de instalacao."
-        $fix = "1. Clique no botao '[ ] RESOLVER PROBLEMA EM 1 CLIQUE' abaixo para liberar o acesso automaticamente.`n2. Ou execute o 1 Click DLSS 5 clicando com o botao direito e 'Executar como Administrador'."
+        $what = if ($isPt) { "O Windows bloqueou a gravacao ou modificacao de arquivos na pasta do jogo." } else { "Windows blocked file modification or write access in the game folder." }
+        $cause = if ($isPt) { "Falta de privilegios de Administrador ou permissao 'Somente Leitura' na pasta de instalacao." } else { "Missing Administrator privileges or Read-Only permissions on game directory." }
+        $fix = if ($isPt) { "1. Clique no botao '[OK] RESOLVER PROBLEMA EM 1 CLIQUE' abaixo para liberar o acesso automaticamente.`n2. Ou execute o 1 Click DLSS 5 clicando com o botao direito e 'Executar como Administrador'." } else { "1. Click '[OK] 1-CLICK AUTO-FIX' below to grant permissions automatically.`n2. Or right-click 1-Click DLSS 5 and select 'Run as Administrator'." }
     }
     elseif ($msg -match 'IOException' -or $msg -match 'being used by another process' -or $msg -match 'sendo usado por outro processo') {
         $code = "ERR_FILE_LOCKED"
-        $what = "Um dos arquivos do jogo esta travado e nao pode ser atualizado no momento."
-        $cause = "O jogo ainda esta aberto em segundo plano, ou um programa como Discord/RivaTuner esta travando a DLL."
-        $fix = "1. Clique no botao '[ ] RESOLVER PROBLEMA EM 1 CLIQUE' abaixo para fechar os processos travados e instalar automaticamente."
+        $what = if ($isPt) { "Um dos arquivos do jogo esta travado e nao pode ser atualizado no momento." } else { "A game file is currently locked and cannot be updated right now." }
+        $cause = if ($isPt) { "O jogo ainda esta aberto em segundo plano, ou um programa como Discord/RivaTuner esta travando a DLL." } else { "The game is still running in background, or software like Discord/RivaTuner/RTSS is holding the DLL." }
+        $fix = if ($isPt) { "1. Clique no botao '[OK] RESOLVER PROBLEMA EM 1 CLIQUE' abaixo para fechar os processos travados e instalar automaticamente." } else { "1. Click '[OK] 1-CLICK AUTO-FIX' below to terminate locked background processes and install automatically." }
     }
-    elseif ($msg -match 'ERR_PATH_NOT_FOUND' -or $msg -match 'nao existe') {
+    elseif ($msg -match 'ERR_PATH_NOT_FOUND' -or $msg -match 'nao existe' -or $msg -match 'does not exist') {
         $code = "ERR_PATH_NOT_FOUND"
-        $what = "O caminho da pasta informado nao foi encontrado no seu computador."
-        $cause = "O jogo pode ter sido movido para outro disco ou desinstalado."
-        $fix = "1. Clique em 'PROCURAR JOGO' e localize a pasta atualizada do jogo."
+        $what = if ($isPt) { "O caminho da pasta informado nao foi encontrado no seu computador." } else { "The specified folder path was not found on your system." }
+        $cause = if ($isPt) { "O jogo pode ter sido movido para outro disco ou desinstalado." } else { "The game may have been uninstalled or moved to another drive." }
+        $fix = if ($isPt) { "1. Clique em 'PROCURAR JOGO' e localize a pasta atualizada do jogo." } else { "1. Click 'BROWSE GAME' and locate the valid game directory." }
     }
 
     return [pscustomobject]@{
@@ -726,7 +1097,18 @@ function Show-FriendlyErrorDialog {
     $diag = Get-ErrorDiagnosis -Ex $Ex -Context $Context
     $d = Get-Dict -Lang $script:CurrentLang
 
-    Write-Status -Message "ERRO EM $Context : $($diag.RawMessage)" -Level "ERROR" -Code $diag.Code -Cause $diag.Cause -Fix $diag.Fix
+    $errType = if ($Ex) { $Ex.GetType().FullName } else { "System.Exception" }
+    $st = if ($Ex) { $Ex.StackTrace } else { "" }
+    Write-Status -Message "================================================================================" -Level "ERROR"
+    Write-Status -Message "[FALHA DETECTADA] Contexto: '$Context' | Codigo: [$($diag.Code)]" -Level "ERROR"
+    Write-Status -Message "Tipo de Excecao: $errType" -Level "ERROR"
+    Write-Status -Message "Mensagem Bruta: $($diag.RawMessage)" -Level "ERROR" -Cause $diag.Cause -Fix $diag.Fix
+    if ($st) {
+        Write-Status -Message "Stack Trace Detalhado:`r`n$st" -Level "ERROR"
+    }
+    Write-Status -Message "================================================================================" -Level "ERROR" 
+
+    Write-Status -Message "[UI] Janela de diagnostico e recuperacao de erro exibida ao usuario: Codigo='[$($diag.Code)]' | Contexto='$Context'" -Level "WARN"
 
     if ($env:DLSS5_HEADLESS) { return }
 
@@ -808,8 +1190,14 @@ function Show-FriendlyErrorDialog {
         $btnAutoFix.Font = New-Object System.Drawing.Font("Segoe UI Bold", 11)
         Style-Button -Button $btnAutoFix -BaseColor ([System.Drawing.Color]::FromArgb(118, 185, 0)) -HoverColor ([System.Drawing.Color]::FromArgb(140, 220, 0)) -TextColor ([System.Drawing.Color]::Black)
         $btnAutoFix.Add_Click({
+                Write-Status -Message "[USER] Botao '1-CLICK AUTO FIX' acionado pelo usuario para: '$TargetPath' | Modo: '$SelectedMode'" -Level "WARN"
                 $ok = Resolve-IssueInOneClick -TargetPath $TargetPath -SelectedMode $SelectedMode
-                if ($ok) { $errForm.Close() }
+                if ($ok) { 
+                    Write-Status -Message "[USER] '1-CLICK AUTO FIX' concluiu a reparacao com exito." -Level "OK"
+                    $errForm.Close() 
+                } else {
+                    Write-Status -Message "[USER] '1-CLICK AUTO FIX' nao concluiu a reparacao total da falha." -Level "WARN"
+                }
             })
         [void]$errForm.Controls.Add($btnAutoFix)
     }
@@ -823,7 +1211,7 @@ function Show-FriendlyErrorDialog {
     [void]$errForm.Controls.Add($btnOpenLogDlg)
 
     $btnOk = New-Object System.Windows.Forms.Button
-    $btnOk.Text = "Fechar"
+    $btnOk.Text = if ($d.BtnClose) { $d.BtnClose } else { "Close" }
     $btnOk.Location = New-Object System.Drawing.Point(455, 405)
     $btnOk.Size = New-Object System.Drawing.Size(170, 36)
     Style-Button -Button $btnOk -BaseColor ([System.Drawing.Color]::FromArgb(35, 80, 145)) -HoverColor ([System.Drawing.Color]::FromArgb(50, 110, 195))
@@ -834,7 +1222,9 @@ function Show-FriendlyErrorDialog {
 }
 
 function Show-SystemDiagnosisDialog {
+    Write-Status -Message "[USER] Botao 'DIAGNOSTICO DO SISTEMA' acionado pelo usuario." -Level "INFO"
     $d = Get-Dict -Lang $script:CurrentLang
+    $isPt = ($script:CurrentLang -eq "PT")
     $diagForm = New-Object System.Windows.Forms.Form
     $diagForm.Text = $d.DiagTitle
     $diagForm.Size = New-Object System.Drawing.Size(640, 460)
@@ -847,7 +1237,7 @@ function Show-SystemDiagnosisDialog {
     $diagForm.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
 
     $lblHdr = New-Object System.Windows.Forms.Label
-    $lblHdr.Text = "   CHECKLIST DE COMPATIBILIDADE DO COMPUTADOR"
+    $lblHdr.Text = if ($isPt) { "   CHECKLIST DE COMPATIBILIDADE DO COMPUTADOR" } else { "   SYSTEM COMPATIBILITY CHECKLIST" }
     $lblHdr.Location = New-Object System.Drawing.Point(20, 15)
     $lblHdr.Size = New-Object System.Drawing.Size(590, 24)
     $lblHdr.Font = New-Object System.Drawing.Font("Segoe UI Bold", 11)
@@ -862,10 +1252,13 @@ function Show-SystemDiagnosisDialog {
     $listChecks.BackColor = [System.Drawing.Color]::FromArgb(18, 25, 42)
     $listChecks.ForeColor = [System.Drawing.Color]::White
     $listChecks.BorderStyle = "FixedSingle"
-    [void]$listChecks.Columns.Add("Item Verificado", 200)
-    [void]$listChecks.Columns.Add("Status", 90)
-    [void]$listChecks.Columns.Add("Resultado do Teste", 280)
-    [void]$diagForm.Controls.Add($listChecks)
+    
+    $col1 = if ($isPt) { "Item Verificado" } else { "Verified Item" }
+    $col2 = if ($isPt) { "Status" } else { "Status" }
+    $col3 = if ($isPt) { "Resultado do Teste" } else { "Test Result" }
+    [void]$listChecks.Columns.Add($col1, 200)
+    [void]$listChecks.Columns.Add($col2, 90)
+    [void]$listChecks.Columns.Add($col3, 280)
 
     # 1. GPU Check
     $gpuName = "NVIDIA RTX Series"
@@ -876,7 +1269,8 @@ function Show-SystemDiagnosisDialog {
         if ($g) { $gpuName = $g.Name; $gpuDesc = "$($g.Name) (Driver $($g.DriverVersion))" }
     }
     catch {}
-    $it1 = New-Object System.Windows.Forms.ListViewItem("Placa de V deo / Driver")
+    $it1Title = if ($isPt) { "Placa de Video / Driver" } else { "Graphics Card / Driver" }
+    $it1 = New-Object System.Windows.Forms.ListViewItem($it1Title)
     [void]$it1.SubItems.Add($gpuStatus)
     [void]$it1.SubItems.Add($gpuDesc)
     $it1.ForeColor = [System.Drawing.Color]::FromArgb(118, 225, 125)
@@ -893,10 +1287,11 @@ function Show-SystemDiagnosisDialog {
         }
         catch {
             $permStatus = "[FALHA]"
-            $permDesc = "Acesso negado na pasta. Clique em Auto-Fix."
+            $permDesc = if ($isPt) { "Acesso negado na pasta. Clique em Auto-Fix." } else { "Access denied on game folder. Click 1-Click Auto-Fix." }
         }
     }
-    $it2 = New-Object System.Windows.Forms.ListViewItem("Permiss es de Escrita")
+    $it2Title = if ($isPt) { "Permissoes de Escrita" } else { "Write Permissions" }
+    $it2 = New-Object System.Windows.Forms.ListViewItem($it2Title)
     [void]$it2.SubItems.Add($permStatus)
     [void]$it2.SubItems.Add($permDesc)
     if ($permStatus -eq "[PASS]") {
@@ -915,10 +1310,11 @@ function Show-SystemDiagnosisDialog {
         $p = Get-Process -Name $exeBase -ErrorAction SilentlyContinue
         if ($p) {
             $procStatus = "[AVISO]"
-            $procDesc = "O jogo $($script:SelectedGameObj.ExeName) esta em execucao!"
+            $procDesc = if ($isPt) { "O jogo $($script:SelectedGameObj.ExeName) esta em execucao!" } else { "Game $($script:SelectedGameObj.ExeName) is currently running!" }
         }
     }
-    $it3 = New-Object System.Windows.Forms.ListViewItem("Status do Processo")
+    $it3Title = if ($isPt) { "Status do Processo" } else { "Process Status" }
+    $it3 = New-Object System.Windows.Forms.ListViewItem($it3Title)
     [void]$it3.SubItems.Add($procStatus)
     [void]$it3.SubItems.Add($procDesc)
     if ($procStatus -eq "[PASS]") {
@@ -935,9 +1331,10 @@ function Show-SystemDiagnosisDialog {
     $nrP = Join-Path (Get-DLSS5PayloadDirectory) "nvngx_dlssnr.dll"
     if (-not (Test-Path -LiteralPath $nrP)) {
         $payStatus = "[ERRO]"
-        $payDesc = "nvngx_dlssnr.dll ausente na pasta payload."
+        $payDesc = if ($isPt) { "nvngx_dlssnr.dll ausente na pasta payload." } else { "nvngx_dlssnr.dll missing in payload directory." }
     }
-    $it4 = New-Object System.Windows.Forms.ListViewItem("Runtimes DLSS 5")
+    $it4Title = if ($isPt) { "Runtimes DLSS 5" } else { "DLSS 5 Runtimes" }
+    $it4 = New-Object System.Windows.Forms.ListViewItem($it4Title)
     [void]$it4.SubItems.Add($payStatus)
     [void]$it4.SubItems.Add($payDesc)
     if ($payStatus -eq "[PASS]") {
@@ -957,7 +1354,7 @@ function Show-SystemDiagnosisDialog {
     [void]$diagForm.Controls.Add($lblAll)
 
     $btnDiagClose = New-Object System.Windows.Forms.Button
-    $btnDiagClose.Text = "Fechar"
+    $btnDiagClose.Text = if ($d.BtnClose) { $d.BtnClose } else { "Close" }
     $btnDiagClose.Location = New-Object System.Drawing.Point(465, 385)
     $btnDiagClose.Size = New-Object System.Drawing.Size(140, 34)
     Style-Button -Button $btnDiagClose -BaseColor ([System.Drawing.Color]::FromArgb(35, 80, 145)) -HoverColor ([System.Drawing.Color]::FromArgb(50, 110, 195))
@@ -972,7 +1369,7 @@ function Set-Dlss5ReShadeIni {
     param(
         [Parameter(Mandatory = $true)][string]$IniPath,
         [Parameter(Mandatory = $false)][bool]$IsFeederMode = $true,
-        [Parameter(Mandatory = $false)][int]$EnableHooks = 1
+        [Parameter(Mandatory = $false)][int]$EnableHooks = 2
     )
     $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     if ($IsFeederMode) {
@@ -1179,6 +1576,7 @@ PreprocessorDefinitions=DLSS5_MV_PROVIDER=3
     }
 
     $presetContent = @"
+# 1-Click DLSS 5 Neural Preset
 Techniques=$techniques
 TechniqueSorting=$sorting
 $definitions$feederSection
@@ -1266,6 +1664,22 @@ function Repair-GameCriticalDependencies {
     }
 }
 
+function Set-GameHighPerformanceGpuPreference {
+    param([Parameter(Mandatory = $true)][string]$ExecutablePath)
+    try {
+        $regPath = "HKCU:\Software\Microsoft\DirectX\UserGpuPreferences"
+        if (-not (Test-Path -LiteralPath $regPath)) {
+            [void](New-Item -Path $regPath -Force)
+        }
+        $currentVal = (Get-ItemProperty -Path $regPath -Name $ExecutablePath -ErrorAction SilentlyContinue).$ExecutablePath
+        if ($currentVal -ne "GpuPreference=2;") {
+            Set-ItemProperty -Path $regPath -Name $ExecutablePath -Value "GpuPreference=2;" -Type String -Force -ErrorAction SilentlyContinue
+            Write-Status -Message "Preferencia DXGI configurada para GPU de Alto Desempenho (dGPU): $(Split-Path -Leaf $ExecutablePath)" -Level "INFO"
+        }
+    }
+    catch {}
+}
+
 # --- MOTOR DE INSTALACAO UNIVERSAL ---
 function Install-Dlss5 {
     param(
@@ -1295,18 +1709,66 @@ function Install-Dlss5 {
     }
 
     if ($ProgressCallback) { &$ProgressCallback 20 "Jogo: $($target.ExeName) | API: $api | Modo: $effectiveMode" }
-    Write-Status -Message "Iniciando instalacao para: $($target.ExeName) | API: $api | Modo: $effectiveMode | Arquitetura: $($target.Architecture)" -Level "INFO"
+    Write-Status -Message "================================================================================" -Level "INFO"
+    Write-Status -Message "[INSTALACAO] Iniciando processo para: $($target.ExeName)" -Level "INFO"
+    Write-Status -Message "[INSTALACAO] Diretorio alvo: '$targetFolder'" -Level "INFO"
+    Write-Status -Message "[INSTALACAO] Modo Selecionado: $effectiveMode | API Detectada: $api | Arquitetura: $($target.Architecture)" -Level "INFO"
+
+    # Teste preventivo de permissoes de escrita na pasta do jogo
+    $testFile = Join-Path $targetFolder "._dlss5_perm_test.tmp"
+    try {
+        [System.IO.File]::WriteAllText($testFile, "DLSS5_PERM_CHECK")
+        Remove-Item -LiteralPath $testFile -Force -ErrorAction SilentlyContinue
+        Write-Status -Message "[PERMISSAO] Permissao de escrita confirmada com sucesso no diretorio do jogo." -Level "OK"
+    }
+    catch {
+        Write-Status -Message "[PERMISSAO] AVISO: Permissao restrita na pasta do jogo: $($_.Exception.Message)" -Level "WARN"
+    }
 
     $backupFolder = Join-Path $targetFolder $script:BackupName
     [void](New-Item -ItemType Directory -Path $backupFolder -Force)
     $stateFile = Join-Path $targetFolder $script:StateName
 
+    $neverBackupFiles = @(
+        "renodx-dlss5.addon64", "renodx-dlss5++.addon64", "renodx-dlss5-v3.addon64",
+        "dlss5-feed.addon64", "dlss5-feed.addon32", "dlss5-feed.cfg", "dlss5-feed.log", "dlss5-feed.ini",
+        "dlss5-feed-host.log", "dlss5-feed-crash.dmp",
+        "VkLayer_feed_vk.dll", "VkLayer_feed_vk.json", "run-with-feed-layer.bat",
+        "VkLayer_feed_vk32.dll", "VkLayer_feed_vk32.json", "run-with-feed-layer32.bat",
+        "nvngx_dlssnr.dll", "sl.dlss_nr.dll",
+        "OptiScaler.ini", "OptiScaler.log",
+        "ReShade.ini", "ReShadePreset.ini", "ReShade.log",
+        $script:StateName, "_1Click_DLSS5_State.json", "_DLSS5_Easy_Installer_State.json", "dlss5_backup_manifest.json"
+    )
+
+    # Sanitizacao preventiva do backup contra contaminacao por reinstalacao/atualizacao
+    if (Test-Path -LiteralPath $backupFolder -PathType Container) {
+        foreach ($cFile in $neverBackupFiles) {
+            $cP = Join-Path $backupFolder $cFile
+            if (Test-Path -LiteralPath $cP) {
+                Remove-Item -LiteralPath $cP -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+        # Se dxgi.dll no backup tiver o mesmo tamanho do payload ReShade, foi copiado por contaminacao pregressa
+        $bDxgi = Join-Path $backupFolder "dxgi.dll"
+        if (Test-Path -LiteralPath $bDxgi -PathType Leaf) {
+            $pDxgi = Join-Path (Get-DLSS5PayloadDirectory) "dxgi.dll"
+            if (Test-Path -LiteralPath $pDxgi) {
+                if ((Get-Item -LiteralPath $bDxgi).Length -eq (Get-Item -LiteralPath $pDxgi).Length) {
+                    Remove-Item -LiteralPath $bDxgi -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
+
     # Se ja existir uma instalacao anterior de outro modo, limpar arquivos injetados do modo anterior
     $existingBackedUp = @()
+    $previousInjected = @()
     if (Test-Path -LiteralPath $stateFile -PathType Leaf) {
         try {
             $oldSaved = Get-Content -LiteralPath $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
-            if ($oldSaved.BackedUpFiles) { $existingBackedUp = @($oldSaved.BackedUpFiles) }
+            if ($oldSaved.BackedUpFiles) { $existingBackedUp = @($oldSaved.BackedUpFiles | Where-Object { $neverBackupFiles -notcontains $_ }) }
+            if ($oldSaved.InjectedFiles) { $previousInjected = @($oldSaved.InjectedFiles) }
             if ($oldSaved.Mode -and ($oldSaved.Mode -ne $effectiveMode)) {
                 if ($ProgressCallback) { &$ProgressCallback 30 "Detectada troca de modo ($($oldSaved.Mode) -> $effectiveMode). Limpando arquivos anteriores..." }
                 Write-Status -Message "Detectada troca de modo ($($oldSaved.Mode) -> $effectiveMode). Removendo arquivos do modo anterior..." -Level "INFO"
@@ -1346,17 +1808,29 @@ function Install-Dlss5 {
     function Safe-Copy {
         param($Src, $DstName)
         $dst = Join-Path $targetFolder $DstName
-        if (Test-Path -LiteralPath $dst -PathType Leaf) {
-            # S  faz backup se o arquivo original N O foi injetado nesta mesma sess o
-            if ($state.InjectedFiles -notcontains $DstName) {
-                $bDst = Join-Path $backupFolder $DstName
-                if (-not (Test-Path -LiteralPath $bDst -PathType Leaf)) {
-                    Copy-Item -LiteralPath $dst -Destination $bDst -Force
-                    $state.BackedUpFiles += $DstName
-                }
+        
+        # NUNCA fazer backup se for artefato do DLSS 5, ou se ja foi injetado anteriormente
+        $isDlss5Artifact = ($neverBackupFiles -contains $DstName) -or ($DstName -like "*.addon64") -or ($DstName -like "*.addon32")
+        if ($previousInjected -and ($previousInjected -contains $DstName)) { $isDlss5Artifact = $true }
+        if ($state.InjectedFiles -contains $DstName) { $isDlss5Artifact = $true }
+
+        if ($isDlss5Artifact) {
+            Write-Status -Message "[BACKUP-CHECK] '$DstName' reconhecido como artefato previo do DLSS 5 (ignorado no backup de fabrica)" -Level "INFO"
+        }
+        elseif (Test-Path -LiteralPath $dst -PathType Leaf) {
+            $bDst = Join-Path $backupFolder $DstName
+            if (-not (Test-Path -LiteralPath $bDst -PathType Leaf)) {
+                $origItem = Get-Item -LiteralPath $dst
+                $origBytes = $origItem.Length
+                Copy-Item -LiteralPath $dst -Destination $bDst -Force
+                if ($state.BackedUpFiles -notcontains $DstName) { $state.BackedUpFiles += $DstName }
+                Write-Status -Message "[BACKUP] Arquivo original protegido em _DLSS5_Backup: '$DstName' ($origBytes bytes)" -Level "OK"
             }
         }
         Copy-Item -LiteralPath $Src -Destination $dst -Force
+        $injItem = Get-Item -LiteralPath $dst
+        $injBytes = $injItem.Length
+        Write-Status -Message "[INJECAO] Componente injetado: '$DstName' -> '$dst' ($injBytes bytes | Origem: $(Split-Path -Leaf $Src))" -Level "OK"
         if ($state.InjectedFiles -notcontains $DstName) { $state.InjectedFiles += $DstName }
     }
 
@@ -1440,11 +1914,24 @@ function Install-Dlss5 {
         $hasStreamline = (Test-Path -LiteralPath (Join-Path $targetFolder "sl.interposer.dll") -PathType Leaf)
         $hookVal = if ($hasStreamline) { 2 } else { 1 }
         
-        # Se o jogo j  possui Streamline e suporta sl.dlss_nr.dll opcional, podemos fornecer apenas o plugin neural sem tocar no interposer
-        $slNrSrc = Join-Path (Get-DLSS5PayloadDirectory) "sl.dlss_nr.dll"
-        if ($hasStreamline -and (Test-Path -LiteralPath $slNrSrc -PathType Leaf)) {
-            Safe-Copy -Src $slNrSrc -DstName "sl.dlss_nr.dll"
+        # JOGOS COM DLSS NATIVO:
+        # NUNCA injetar sl.dlss_nr.dll! Em jogos Unreal Engine 5 (como S.T.A.L.K.E.R. 2) e outros com Streamline oficial,
+        # o interposer oficial do jogo (sl.interposer.dll) rejeita sl.dlss_nr.dll nao assinado pelo appId do jogo,
+        # causando aborto da inicializacao do dispositivo D3D12 (DX12 RHI / ChooseAdapter failure).
+        # O RenoDX addon (renodx-dlss5.addon64) avalia e executa DLSS-NR diretamente via NGX (nvngx_dlssnr.dll),
+        # dispensando totalmente o plugin de Streamline.
+        $staleSlNr = Join-Path $targetFolder "sl.dlss_nr.dll"
+        if (Test-Path -LiteralPath $staleSlNr -PathType Leaf) {
+            Remove-Item -LiteralPath $staleSlNr -Force -ErrorAction SilentlyContinue
+            Write-Status -Message "Removido sl.dlss_nr.dll obsoleto para garantir compatibilidade com Streamline e DX12 RHI." -Level "INFO"
         }
+
+        # Em jogos D3D12 no Modo DIRECT, fixamos EnableHooks=2 (NGX-only).
+        # Evita contended patch site com modulos Streamline nativos que causam crash ou falha de RHI no boot.
+        $hookVal = 2
+
+        # Registra preferencia de GPU de Alto Desempenho (dGPU) para evitar selecao erronea de iGPU em CPUs hibridas (ex: Ryzen 9000/7000)
+        Set-GameHighPerformanceGpuPreference -ExecutablePath $target.Executable
 
         # Shaders e Texturas opcionais para ReShade (CAS, Vibrance, Tonemap, SMAA, FXAA)
         $shaderDir = Join-Path $targetFolder "reshade-shaders\Shaders"
@@ -1461,10 +1948,13 @@ function Install-Dlss5 {
 
         $targetPreset = Join-Path $targetFolder "ReShadePreset.ini"
         if ((Test-Path -LiteralPath $targetPreset -PathType Leaf) -and ($state.InjectedFiles -notcontains "ReShadePreset.ini")) {
-            $bDst = Join-Path $backupFolder "ReShadePreset.ini"
-            if (-not (Test-Path -LiteralPath $bDst -PathType Leaf)) {
-                Copy-Item -LiteralPath $targetPreset -Destination $bDst -Force
-                $state.BackedUpFiles += "ReShadePreset.ini"
+            $pContent = Get-Content -LiteralPath $targetPreset -Raw -ErrorAction SilentlyContinue
+            if ($pContent -notmatch 'DLSS 5|renodx-dlss5|dlss5-feed|ContrastAdaptiveSharpen') {
+                $bDst = Join-Path $backupFolder "ReShadePreset.ini"
+                if (-not (Test-Path -LiteralPath $bDst -PathType Leaf)) {
+                    Copy-Item -LiteralPath $targetPreset -Destination $bDst -Force
+                    if ($state.BackedUpFiles -notcontains "ReShadePreset.ini") { $state.BackedUpFiles += "ReShadePreset.ini" }
+                }
             }
         }
         Set-Dlss5PresetIni -PresetPath $targetPreset -IsFeederMode $false
@@ -1472,10 +1962,13 @@ function Install-Dlss5 {
 
         $targetIni = Join-Path $targetFolder "ReShade.ini"
         if ((Test-Path -LiteralPath $targetIni -PathType Leaf) -and ($state.InjectedFiles -notcontains "ReShade.ini")) {
-            $bDst = Join-Path $backupFolder "ReShade.ini"
-            if (-not (Test-Path -LiteralPath $bDst -PathType Leaf)) {
-                Copy-Item -LiteralPath $targetIni -Destination $bDst -Force
-                $state.BackedUpFiles += "ReShade.ini"
+            $iContent = Get-Content -LiteralPath $targetIni -Raw -ErrorAction SilentlyContinue
+            if ($iContent -notmatch 'DLSS 5|renodx-dlss5|dlss5-feed') {
+                $bDst = Join-Path $backupFolder "ReShade.ini"
+                if (-not (Test-Path -LiteralPath $bDst -PathType Leaf)) {
+                    Copy-Item -LiteralPath $targetIni -Destination $bDst -Force
+                    if ($state.BackedUpFiles -notcontains "ReShade.ini") { $state.BackedUpFiles += "ReShade.ini" }
+                }
             }
         }
         Set-Dlss5ReShadeIni -IniPath $targetIni -IsFeederMode $false -EnableHooks $hookVal
@@ -1580,11 +2073,13 @@ function Install-Dlss5 {
         default { "Modo 3: Feeder Universal (DLAA 100% Nativo)" }
     }
     
+    Write-Status -Message "[INSTALACAO] Concluida com sucesso! Total de componentes injetados: $($state.InjectedFiles.Count) | Arquivos originais em backup: $($state.BackedUpFiles.Count)" -Level "OK"
+    Write-Status -Message "================================================================================" -Level "INFO"
     if ($ProgressCallback) { &$ProgressCallback 100 "DLSS 5 instalado com sucesso!" }
     Show-InstallationSuccessDialog -GameName $target.ExeName -ModeName $modeReadable -TargetExePath $target.Executable
 }
 
-# --- MOTOR DE RESTAURA  O DE F BRICA (UNINSTALL) ---
+# --- MOTOR DE RESTAURACAO DE FABRICA (UNINSTALL) ---
 function Uninstall-Dlss5 {
     param([Parameter(Mandatory = $true)][string]$TargetPath)
     $target = Resolve-GameTarget -TargetPath $TargetPath
@@ -1593,39 +2088,11 @@ function Uninstall-Dlss5 {
     $backupFolder = Join-Path $targetFolder $script:BackupName
     $d = Get-Dict -Lang $script:CurrentLang
 
-    Write-Status -Message "Restaurando jogo para o estado original de fabrica em: $targetFolder" -Level "INFO"
+    Write-Status -Message "================================================================================" -Level "INFO"
+    Write-Status -Message "[RESTAURACAO/UNINSTALL] Iniciando procedimento de restauracao de fabrica em: '$targetFolder'" -Level "INFO"
 
-    $savedBacked = @()
-    $savedInjected = @()
-    if (Test-Path -LiteralPath $stateFile -PathType Leaf) {
-        try {
-            $saved = Get-Content -LiteralPath $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
-            if ($saved.BackedUpFiles) { $savedBacked = @($saved.BackedUpFiles) }
-            if ($saved.InjectedFiles) { $savedInjected = @($saved.InjectedFiles) }
-        }
-        catch {}
-    }
-
-    if (Test-Path -LiteralPath $backupFolder -PathType Container) {
-        $physBacked = Get-ChildItem -LiteralPath $backupFolder -File -ErrorAction SilentlyContinue
-        foreach ($pb in $physBacked) {
-            if ($savedBacked -notcontains $pb.Name) { $savedBacked += $pb.Name }
-        }
-    }
-
-    if (Test-Path -LiteralPath $backupFolder -PathType Container) {
-        $backed = Get-ChildItem -LiteralPath $backupFolder -File -ErrorAction SilentlyContinue
-        foreach ($bf in $backed) {
-            $dst = Join-Path $targetFolder $bf.Name
-            Copy-Item -LiteralPath $bf.FullName -Destination $dst -Force
-            Write-Status -Message "Arquivo original restaurado: $($bf.Name)" -Level "OK"
-        }
-        Remove-Item -LiteralPath $backupFolder -Recurse -Force -ErrorAction SilentlyContinue
-    }
-
-    # Lista de purga cirurgica estrita (ARQUIVOS EXCLUSIVOS do DLSS 5 / Feeder / ReShade / OptiScaler)
-    # NUNCA incluir ou purgar bibliotecas originais de jogos (XeSS, DLSS, Streamline, FSR, Bink, Steam)
-    $purgeList = @(
+    # Lista estrita de artefatos exclusivos do DLSS 5 / Feeder / ReShade / OptiScaler
+    $dlss5Artifacts = @(
         "renodx-dlss5.addon64", "renodx-dlss5++.addon64", "renodx-dlss5-v3.addon64",
         "dlss5-feed.addon64", "dlss5-feed.addon32", "dlss5-feed.cfg", "dlss5-feed.log", "dlss5-feed.ini",
         "dlss5-feed-host.log", "dlss5-feed-crash.dmp",
@@ -1637,22 +2104,103 @@ function Uninstall-Dlss5 {
         $script:StateName, "_1Click_DLSS5_State.json", "_DLSS5_Easy_Installer_State.json", "dlss5_backup_manifest.json"
     )
 
+    $savedBacked = @()
+    $savedInjected = @()
+    if (Test-Path -LiteralPath $stateFile -PathType Leaf) {
+        try {
+            $saved = Get-Content -LiteralPath $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($saved.BackedUpFiles) {
+                # Remove artefatos do DLSS 5 da lista de arquivos originais do jogo
+                $savedBacked = @($saved.BackedUpFiles | Where-Object { $dlss5Artifacts -notcontains $_ -and $_ -notlike "*.addon64" -and $_ -notlike "*.addon32" })
+            }
+            if ($saved.InjectedFiles) { $savedInjected = @($saved.InjectedFiles) }
+            Write-Status -Message "[RESTAURACAO] Manifest previo encontrado: Arquivos originais em backup=$($savedBacked.Count) | Arquivos injetados registrados=$($savedInjected.Count)" -Level "INFO"
+        }
+        catch {
+            Write-Status -Message "[RESTAURACAO] Falha ao analisar arquivo de manifesto ($stateFile): $($_.Exception.Message)" -Level "WARN"
+        }
+    }
+
+    # 1. Higienizacao estrita do backup: remover qualquer arquivo do DLSS 5 porventura copiado para ca
+    if (Test-Path -LiteralPath $backupFolder -PathType Container) {
+        foreach ($cFile in $dlss5Artifacts) {
+            $cP = Join-Path $backupFolder $cFile
+            if (Test-Path -LiteralPath $cP) {
+                Remove-Item -LiteralPath $cP -Recurse -Force -ErrorAction SilentlyContinue
+                Write-Status -Message "[RESTAURACAO] Artefato do DLSS 5 purgado do diretorio de backup: '$cFile'" -Level "INFO"
+            }
+        }
+        # Se dxgi.dll no backup tiver o mesmo tamanho do payload ReShade, foi copiado por contaminacao pregressa
+        $bDxgi = Join-Path $backupFolder "dxgi.dll"
+        if (Test-Path -LiteralPath $bDxgi -PathType Leaf) {
+            $pDxgi = Join-Path (Get-DLSS5PayloadDirectory) "dxgi.dll"
+            if (Test-Path -LiteralPath $pDxgi) {
+                if ((Get-Item -LiteralPath $bDxgi).Length -eq (Get-Item -LiteralPath $pDxgi).Length) {
+                    Remove-Item -LiteralPath $bDxgi -Force -ErrorAction SilentlyContinue
+                    Write-Status -Message "[RESTAURACAO] dxgi.dll contaminado removido do backup" -Level "WARN"
+                }
+            }
+        }
+        foreach ($rIni in @("ReShade.ini", "ReShadePreset.ini")) {
+            $rP = Join-Path $backupFolder $rIni
+            if (Test-Path -LiteralPath $rP -PathType Leaf) {
+                $rContent = Get-Content -LiteralPath $rP -Raw -ErrorAction SilentlyContinue
+                if ($rContent -match 'renodx-dlss5|DLSS 5|dlss5-feed') {
+                    Remove-Item -LiteralPath $rP -Force -ErrorAction SilentlyContinue
+                    Write-Status -Message "[RESTAURACAO] $rIni customizado do DLSS 5 purgado do backup" -Level "INFO"
+                }
+            }
+        }
+    }
+
+    if (Test-Path -LiteralPath $backupFolder -PathType Container) {
+        $physBacked = Get-ChildItem -LiteralPath $backupFolder -File -ErrorAction SilentlyContinue
+        foreach ($pb in $physBacked) {
+            if ($dlss5Artifacts -notcontains $pb.Name -and ($savedBacked -notcontains $pb.Name)) {
+                $savedBacked += $pb.Name
+            }
+        }
+    }
+
+    # 2. Restauracao apenas de arquivos autenticos do jogo original
+    $restoredCount = 0
+    if (Test-Path -LiteralPath $backupFolder -PathType Container) {
+        $backed = Get-ChildItem -LiteralPath $backupFolder -File -ErrorAction SilentlyContinue
+        foreach ($bf in $backed) {
+            if ($dlss5Artifacts -contains $bf.Name -or ($bf.Name -like "*.addon64") -or ($bf.Name -like "*.addon32")) { continue }
+            $dst = Join-Path $targetFolder $bf.Name
+            Copy-Item -LiteralPath $bf.FullName -Destination $dst -Force
+            $restoredCount++
+            $kb = [Math]::Round($bf.Length / 1KB, 2)
+            Write-Status -Message "[RESTAURACAO] Arquivo original de fabrica restaurado: '$($bf.Name)' ($kb KB) -> '$dst'" -Level "OK"
+        }
+        Remove-Item -LiteralPath $backupFolder -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Status -Message "[RESTAURACAO] Pasta de backup limpa e removida com sucesso: '$backupFolder'" -Level "INFO"
+    }
+    else {
+        Write-Status -Message "[RESTAURACAO] Nenhuma pasta de backup pre-existente encontrada em: '$backupFolder'" -Level "INFO"
+    }
+
+    # 3. Lista de purga cirurgica estrita
+    $purgeList = [System.Collections.Generic.List[string]]::new()
+    foreach ($art in $dlss5Artifacts) { [void]$purgeList.Add($art) }
+
     # Adiciona proxies a lista de purga APENAS se foram injetados pelo DLSS 5 e nao pertenciam ao jogo
     $proxyCandidates = @("dxgi.dll", "d3d12.dll", "d3d9.dll", "opengl32.dll", "version.dll")
     foreach ($px in $proxyCandidates) {
         if ($savedInjected -contains $px -and ($savedBacked -notcontains $px)) {
-            $purgeList += $px
+            [void]$purgeList.Add($px)
         }
     }
 
     foreach ($inj in $savedInjected) {
-        if ($savedBacked -notcontains $inj -and ($purgeList -notcontains $inj)) {
-            $purgeList += $inj
+        if ($savedBacked -notcontains $inj -and (-not $purgeList.Contains($inj))) {
+            [void]$purgeList.Add($inj)
         }
     }
 
     # FILTRO ABSOLUTO DE SEGURANCA: NUNCA PURGAR RUNTIMES NATIVOS DE FABRICA DE NENHUM JOGO
-    $purgeList = @($purgeList | Where-Object {
+    $finalPurge = @($purgeList | Where-Object {
         $fn = $_.ToLower()
         if ($fn -match '^(libxess.*\.dll|.*xess.*\.dll|.*xell.*\.dll)$') { return $false }
         if ($fn -match '^nvngx_dlss(?!nr).*') { return $false } # Preserva nvngx_dlss.dll, dlssd, dlssg, deepdvc
@@ -1661,39 +2209,72 @@ function Uninstall-Dlss5 {
         return $true
     })
 
-    foreach ($pf in $purgeList) {
-        if ($savedBacked -contains $pf) { continue }
+    # 4. Executa a purga cirurgica
+    $purgedCount = 0
+    foreach ($pf in $finalPurge) {
+        # Se for artefato do DLSS 5, remove SEMPRE (mesmo se esteve no backup por contaminacao pregressa)
+        $isDlss5Specific = ($dlss5Artifacts -contains $pf) -or ($pf -like "*.addon64") -or ($pf -like "*.addon32")
+        if (-not $isDlss5Specific -and ($savedBacked -contains $pf)) {
+            continue
+        }
         $p = Join-Path $targetFolder $pf
         if (Test-Path -LiteralPath $p) {
+            $itemSz = 0
+            try { $itemSz = (Get-Item -LiteralPath $p).Length } catch {}
+            $szKb = [Math]::Round($itemSz / 1KB, 2)
             Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue
+            $purgedCount++
+            Write-Status -Message "[PURGA] Artefato removido da pasta do jogo: '$pf' ($szKb KB)" -Level "INFO"
         }
     }
 
+    # 5. Higienizacao complementar de pastas e inis de geracao do DLSS 5
     $reshadeDir = Join-Path $targetFolder "reshade-shaders"
     if (Test-Path -LiteralPath $reshadeDir -PathType Container) {
         Remove-Item -LiteralPath $reshadeDir -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Status -Message "[PURGA] Diretorio removido: '$reshadeDir'" -Level "INFO"
     }
     $hostDir = Join-Path $targetFolder "host64"
     if (Test-Path -LiteralPath $hostDir -PathType Container) {
         Remove-Item -LiteralPath $hostDir -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Status -Message "[PURGA] Diretorio removido: '$hostDir'" -Level "INFO"
     }
     foreach ($ld in @("layer-x64", "layer-x86")) {
         $lp = Join-Path $targetFolder $ld
         if (Test-Path -LiteralPath $lp -PathType Container) {
             Remove-Item -LiteralPath $lp -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Status -Message "[PURGA] Diretorio removido: '$lp'" -Level "INFO"
         }
     }
-    foreach ($sf in @($script:StateName, "_1Click_DLSS5_State.json", "_DLSS5_Easy_Installer_State.json")) {
+    foreach ($sf in @($script:StateName, "_1Click_DLSS5_State.json", "_DLSS5_Easy_Installer_State.json", "dlss5_backup_manifest.json")) {
         $sp = Join-Path $targetFolder $sf
         if (Test-Path -LiteralPath $sp -PathType Leaf) {
             Remove-Item -LiteralPath $sp -Force -ErrorAction SilentlyContinue
+            Write-Status -Message "[PURGA] Arquivo de estado removido: '$sf'" -Level "INFO"
         }
     }
 
-    # Autocura preventiva final pos-restauracao: garante que dependencias nativas exigidas estejam presentes
-    Repair-GameCriticalDependencies -TargetFolder $targetFolder -TargetExe $target.Executable
+    # Garante purga absoluta de sl.dlss_nr.dll para proteger o Streamline
+    $staleSlNr = Join-Path $targetFolder "sl.dlss_nr.dll"
+    if (Test-Path -LiteralPath $staleSlNr -PathType Leaf) {
+        Remove-Item -LiteralPath $staleSlNr -Force -ErrorAction SilentlyContinue
+        Write-Status -Message "[PURGA] sl.dlss_nr.dll removido com sucesso." -Level "OK"
+    }
 
-    Write-Status -Message "Jogo 100% restaurado ao estado original de fabrica!" -Level "OK"
+    # Purga ReShade.ini / ReShadePreset.ini se foram gerados pelo DLSS 5
+    foreach ($chkIni in @("ReShade.ini", "ReShadePreset.ini")) {
+        $ciP = Join-Path $targetFolder $chkIni
+        if (Test-Path -LiteralPath $ciP -PathType Leaf) {
+            $ciContent = Get-Content -LiteralPath $ciP -Raw -ErrorAction SilentlyContinue
+            if ($ciContent -match 'renodx-dlss5|DLSS 5|dlss5-feed') {
+                Remove-Item -LiteralPath $ciP -Force -ErrorAction SilentlyContinue
+                Write-Status -Message "[PURGA] $chkIni personalizado pelo DLSS 5 removido." -Level "INFO"
+            }
+        }
+    }
+
+    Write-Status -Message "[RESTAURACAO/UNINSTALL] Jogo 100% restaurado ao estado original de fabrica em '$targetFolder'. Total restaurados: $restoredCount | Total purgados: $purgedCount" -Level "OK"
+    Write-Status -Message "================================================================================" -Level "INFO"
     if (-not $env:DLSS5_HEADLESS) { [System.Windows.Forms.MessageBox]::Show($d.RestoreMsg, $d.RestoreTitle, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) }
 }
 
@@ -1707,6 +2288,15 @@ function Start-GameExecutable {
     # Autocura preventiva antes de inicializar o jogo
     Repair-GameCriticalDependencies -TargetFolder $folder -TargetExe $ExecutablePath
 
+    # Garante que sl.dlss_nr.dll conflitante nao esteja presente na pasta do jogo
+    $staleSl = Join-Path $folder "sl.dlss_nr.dll"
+    if (Test-Path -LiteralPath $staleSl -PathType Leaf) {
+        Remove-Item -LiteralPath $staleSl -Force -ErrorAction SilentlyContinue
+    }
+
+    # Forca preferencia de GPU dedicada de alto desempenho (evita DX12 RHI / selecao de iGPU no Windows 11)
+    Set-GameHighPerformanceGpuPreference -ExecutablePath $ExecutablePath
+
     Write-Status -Message "Iniciando jogo: $(Split-Path -Leaf $ExecutablePath)..." -Level "INFO"
 
     $oldVkPath = $env:VK_LAYER_PATH
@@ -1718,7 +2308,11 @@ function Start-GameExecutable {
             $env:VK_LAYER_PATH = $folder
             $env:VK_INSTANCE_LAYERS = "VK_LAYER_feed_vk"
         }
-        Start-Process -FilePath $ExecutablePath -WorkingDirectory $folder
+        Write-Status -Message "[EXECUCAO] Disparando processo: '$ExecutablePath' (WorkingDir: '$folder')" -Level "INFO"
+        $proc = Start-Process -FilePath $ExecutablePath -WorkingDirectory $folder -PassThru
+        if ($proc) {
+            Write-Status -Message "[EXECUCAO] Processo iniciado com sucesso! PID=$($proc.Id) | Nome=$($proc.ProcessName)" -Level "OK"
+        }
     }
     finally {
         $env:VK_LAYER_PATH = $oldVkPath
@@ -1820,6 +2414,16 @@ function Scan-DriveForGames {
     foreach ($d in $drives) {
         [void]$rootsToScan.Add((Join-Path $d "Games"))
         [void]$rootsToScan.Add((Join-Path $d "Jogos"))
+        [void]$rootsToScan.Add((Join-Path $d "Emulators"))
+        [void]$rootsToScan.Add((Join-Path $d "Emuladores"))
+        [void]$rootsToScan.Add((Join-Path $d "Emu"))
+        [void]$rootsToScan.Add((Join-Path $d "Emus"))
+        [void]$rootsToScan.Add((Join-Path $d "RetroBat\emulators"))
+        [void]$rootsToScan.Add((Join-Path $d "RetroBat"))
+        [void]$rootsToScan.Add((Join-Path $d "LaunchBox\Emulators"))
+        [void]$rootsToScan.Add((Join-Path $d "Playnite\Emulators"))
+        [void]$rootsToScan.Add((Join-Path $d "Games\Emulators"))
+        [void]$rootsToScan.Add((Join-Path $d "Jogos\Emuladores"))
         [void]$rootsToScan.Add((Join-Path $d "Steam\steamapps\common"))
         [void]$rootsToScan.Add((Join-Path $d "SteamLibrary\steamapps\common"))
         [void]$rootsToScan.Add((Join-Path $d "Program Files (x86)\Steam\steamapps\common"))
@@ -1827,6 +2431,26 @@ function Scan-DriveForGames {
         [void]$rootsToScan.Add((Join-Path $d "Program Files\Epic Games"))
         [void]$rootsToScan.Add((Join-Path $d "Epic Games"))
         [void]$rootsToScan.Add((Join-Path $d "XboxGames"))
+    }
+
+    # Pastas de instalacao padrao de emuladores modernos em AppData e ProgramFiles
+    $localPrograms = Join-Path $env:LOCALAPPDATA "Programs"
+    if (Test-Path -LiteralPath $localPrograms) {
+        [void]$rootsToScan.Add($localPrograms)
+    }
+    $appdataRpcs3 = Join-Path $env:APPDATA "rpcs3"
+    if (Test-Path -LiteralPath $appdataRpcs3) {
+        [void]$rootsToScan.Add($appdataRpcs3)
+    }
+    foreach ($progDir in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+        if ($progDir) {
+            foreach ($emuSub in @("RPCS3", "PCSX2", "Dolphin", "ePSXe", "DuckStation", "Ryujinx", "Cemu", "RetroArch")) {
+                $emuPath = Join-Path $progDir $emuSub
+                if (Test-Path -LiteralPath $emuPath) {
+                    [void]$rootsToScan.Add($emuPath)
+                }
+            }
+        }
     }
 
     $ignored = @("steamworks shared", "_commonredist", "directx", "vcredist", "dotnet", "crashreport", "tools", "easyanticheat", "battleye", "launcher", "nam")
@@ -1971,26 +2595,46 @@ $form.Add_DragDrop({
         $files = $e.Data.GetData([System.Windows.Forms.DataFormats]::FileDrop)
         if ($files -and $files.Length -gt 0) {
             $droppedPath = $files[0]
+            Write-Status -Message "[USER] Item solto via Drag & Drop na janela principal: '$droppedPath'" -Level "INFO" 
             try {
                 $resolved = Resolve-GameTarget -TargetPath $droppedPath
                 $api = Detect-GameGraphicsApi -TargetExe $resolved.Executable -GameFolder $resolved.InstallFolder
                 $upscaler = Detect-GameUpscalerType -GameFolder $resolved.InstallFolder -GameRoot $resolved.Root
+                $isInstalled = Test-GameDlss5Installed -GameFolder $resolved.InstallFolder
                 $gObj = [pscustomobject]@{
-                    Order    = 1
-                    Name     = (Split-Path -Leaf $droppedPath)
-                    Path     = $droppedPath
-                    Api      = "$api ($($resolved.Architecture))"
-                    Upscaler = $upscaler
-                    Icon     = $resolved.Icon
-                    ExeName  = $resolved.ExeName
+                    Order       = 1
+                    Name        = (Split-Path -Leaf $droppedPath)
+                    Path        = $droppedPath
+                    Api         = "$api ($($resolved.Architecture))"
+                    Upscaler    = $upscaler
+                    IsInstalled = $isInstalled
+                    Icon        = $resolved.Icon
+                    ExeName     = $resolved.ExeName
                 }
-                $script:CurrentGameLibrary = @($gObj)
-                Refresh-GameLibraryUI -Games @($gObj)
+                
+                # Non-destructive merge
+                $existing = @($script:CurrentGameLibrary | Where-Object { $_.Path.ToLower() -ne $gObj.Path.ToLower() })
+                $script:CurrentGameLibrary = @($gObj) + $existing
+                
+                if ($script:AppConfig.CustomGamePaths -notcontains $droppedPath) {
+                    $script:AppConfig.CustomGamePaths += $droppedPath
+                    Save-AppConfig -Config $script:AppConfig
+                }
+                
+                Save-GamesCache -Games $script:CurrentGameLibrary
+                Refresh-GameLibraryUI -Games $script:CurrentGameLibrary
                 Select-GameInInspector -GameObj $gObj
-                Write-Status -Message "Jogo carregado via Arrastar e Soltar: $($gObj.Name)" -Level "OK"
+                if ($gameList.Items.Count -gt 0) {
+                    $gameList.Items[0].Selected = $true
+                }
+                
+                $d = Get-Dict -Lang $script:CurrentLang
+                $msg = if ($d.GameAddedSuccess) { $d.GameAddedSuccess -f $gObj.Name } elseif ($script:CurrentLang -eq "PT") { "Jogo carregado via Arrastar e Soltar: $($gObj.Name)" } else { "Game loaded via Drag & Drop: $($gObj.Name)" }
+                Write-Status -Message $msg -Level "OK"
             }
             catch {
-                Show-FriendlyErrorDialog -Ex $_.Exception -Context "Arrastar e Soltar" -TargetPath $droppedPath
+                $ctx = if ($script:CurrentLang -eq "PT") { "Arrastar e Soltar" } else { "Drag and Drop" }
+                Show-FriendlyErrorDialog -Ex $_.Exception -Context $ctx -TargetPath $droppedPath
             }
         }
     })
@@ -2100,7 +2744,10 @@ $comboLang.BackColor = [System.Drawing.Color]::FromArgb(22, 32, 54)
 $comboLang.ForeColor = [System.Drawing.Color]::White
 $comboLang.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9)
 [void]$comboLang.Items.AddRange(@("Português (Brasil)", "English (US)", "Español", "Deutsch", "Français", "Italiano", "日本語", "简体中文", "Русский", "한국어"))
-$comboLang.SelectedIndex = 0
+$langCodes = @("PT", "EN", "ES", "DE", "FR", "IT", "JA", "ZH", "RU", "KO")
+$initialLangIdx = [array]::IndexOf($langCodes, $script:CurrentLang)
+if ($initialLangIdx -lt 0) { $initialLangIdx = 1 }
+$comboLang.SelectedIndex = $initialLangIdx
 [void]$header.Controls.Add($comboLang)
 
 # --- BARRA DE FERRAMENTAS / PESQUISA ---
@@ -2114,13 +2761,29 @@ $toolbar.BackColor = [System.Drawing.Color]::FromArgb(16, 24, 40)
 $btnScan = New-Object System.Windows.Forms.Button
 $btnScan.Text = "   ESCANEAR DISCOS"
 $btnScan.Location = New-Object System.Drawing.Point(8, 7)
-$btnScan.Size = New-Object System.Drawing.Size(180, 30)
+$btnScan.Size = New-Object System.Drawing.Size(170, 30)
 Style-Button -Button $btnScan -BaseColor ([System.Drawing.Color]::FromArgb(35, 80, 145)) -HoverColor ([System.Drawing.Color]::FromArgb(50, 110, 195))
 [void]$toolbar.Controls.Add($btnScan)
 
+$chkAutoScan = New-Object System.Windows.Forms.CheckBox
+$chkAutoScan.Text = "Escanear ao iniciar"
+$chkAutoScan.Location = New-Object System.Drawing.Point(186, 9)
+$chkAutoScan.Size = New-Object System.Drawing.Size(160, 26)
+$chkAutoScan.ForeColor = [System.Drawing.Color]::FromArgb(180, 205, 230)
+$chkAutoScan.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
+$chkAutoScan.Checked = [bool]$script:AppConfig.AutoScanOnStartup
+$chkAutoScan.Cursor = [System.Windows.Forms.Cursors]::Hand
+$chkAutoScan.Add_CheckedChanged({
+    $script:AppConfig.AutoScanOnStartup = $chkAutoScan.Checked
+    Save-AppConfig -Config $script:AppConfig
+    Write-Status -Message "[USER] Opcao 'Escanear ao iniciar' alterada para: $($chkAutoScan.Checked)" -Level "INFO"
+})
+[void]$toolbar.Controls.Add($chkAutoScan)
+$script:ChkAutoScan = $chkAutoScan
+
 $txtSearch = New-Object System.Windows.Forms.TextBox
-$txtSearch.Location = New-Object System.Drawing.Point(200, 9)
-$txtSearch.Size = New-Object System.Drawing.Size(830, 26)
+$txtSearch.Location = New-Object System.Drawing.Point(354, 9)
+$txtSearch.Size = New-Object System.Drawing.Size(675, 26)
 $txtSearch.Anchor = "Top, Left, Right"
 $txtSearch.BackColor = [System.Drawing.Color]::FromArgb(10, 15, 26)
 $txtSearch.ForeColor = [System.Drawing.Color]::FromArgb(140, 210, 255)
@@ -2130,8 +2793,8 @@ $txtSearch.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
 
 $btnBrowse = New-Object System.Windows.Forms.Button
 $btnBrowse.Text = "   PROCURAR JOGO"
-$btnBrowse.Location = New-Object System.Drawing.Point(1042, 7)
-$btnBrowse.Size = New-Object System.Drawing.Size(172, 30)
+$btnBrowse.Location = New-Object System.Drawing.Point(1040, 7)
+$btnBrowse.Size = New-Object System.Drawing.Size(174, 30)
 $btnBrowse.Anchor = "Top, Right"
 Style-Button -Button $btnBrowse -BaseColor ([System.Drawing.Color]::FromArgb(40, 65, 110)) -HoverColor ([System.Drawing.Color]::FromArgb(55, 90, 150))
 [void]$toolbar.Controls.Add($btnBrowse)
@@ -2178,7 +2841,7 @@ $gameList.Add_Resize({
 })
 try {
     $null = Add-Type -MemberDefinition '[DllImport("uxtheme.dll", CharSet=CharSet.Unicode)] public static extern int SetWindowTheme(IntPtr hWnd, string pszSubAppName, string pszSubIdList);' -Name "UxThemeListView" -Namespace "Win32" -PassThru -ErrorAction SilentlyContinue
-    [Win32.UxThemeListView]::SetWindowTheme($gameList.Handle, "Explorer", $null)
+    [void][Win32.UxThemeListView]::SetWindowTheme($gameList.Handle, "Explorer", $null)
 } catch {}
 [void]$leftPanel.Controls.Add($gameList)
 
@@ -2332,6 +2995,9 @@ $lblCard3Desc.ForeColor = [System.Drawing.Color]::FromArgb(170, 195, 220)
 
 function Highlight-SelectedModeCard {
     param([string]$Mode)
+    if ($script:SelectedMode -ne $Mode) {
+        Write-Status -Message "[USER] Modo de operacao selecionado manualmente via Card: $Mode" -Level "INFO"
+    }
     $script:SelectedMode = $Mode
     $cardMode1.BackColor = [System.Drawing.Color]::FromArgb(12, 22, 34)
     $cardMode2.BackColor = [System.Drawing.Color]::FromArgb(12, 22, 34)
@@ -2571,6 +3237,13 @@ function Update-UiLanguage {
     $btnOpenFolder.Text = $d.BtnOpenFolder
     $btnOpenLog.Text = $d.BtnOpenLog
 
+    if ($lblTipBadge) { $lblTipBadge.Text = if ($d.TipBadge) { $d.TipBadge } elseif ($script:CurrentLang -eq "PT") { "[DICA]" } else { "[TIP]" } }
+    if ($lblTipDesc) { $lblTipDesc.Text = if ($d.TipDesc) { $d.TipDesc } elseif ($script:CurrentLang -eq "PT") { "Pressione a tecla [End] no jogo para alternar instantaneamente todos os efeitos ReShade (CAS, Vibrance, SMAA) e conferir a diferenca visual em tempo real!" } else { "Press [End] in-game to instantly toggle all ReShade effects (CAS, Vibrance, SMAA) and see visual difference in real time!" } }
+
+    if ($script:ChkAutoScan) {
+        $script:ChkAutoScan.Text = if ($d.ChkAutoScan) { $d.ChkAutoScan } elseif ($d.AutoScanCheckbox) { $d.AutoScanCheckbox } else { "Auto-scan on startup" }
+    }
+
     $btnInstallText = $d.BtnInstall
     if ([string]::IsNullOrWhiteSpace($btnInstallText)) { $btnInstallText = "[⚡] 1-CLIQUE: INSTALAR DLSS 5" }
     $btnInstall.Text = $btnInstallText
@@ -2579,10 +3252,17 @@ function Update-UiLanguage {
     $gameList.Columns[1].Text = $d.ColApi
     $gameList.Columns[2].Text = $d.ColMode
 
+    if ($script:CurrentGameLibrary -and $script:CurrentGameLibrary.Count -gt 0) {
+        Refresh-GameLibraryUI -Games $script:CurrentGameLibrary
+    }
+
     if ($script:SelectedGameObj) {
         Select-GameInInspector -GameObj $script:SelectedGameObj
     }
     else {
+        if ($lblGameTitle) { $lblGameTitle.Text = if ($d.InspectorTitle) { $d.InspectorTitle } else { "Select a Game" } }
+        if ($lblGameStatus) { $lblGameStatus.Text = if ($d.NoGameSelected) { $d.NoGameSelected } else { "Select a game from the library or browse a folder." } }
+        if ($lblReqText) { $lblReqText.Text = if ($d.NoGameSelected) { $d.NoGameSelected } else { "Select a game to load automatic instructions." } }
         $lblStatus.Text = "  " + $d.StatusReady
     }
 }
@@ -2591,7 +3271,11 @@ $comboLang.Add_SelectedIndexChanged({
         $langCodes = @("PT", "EN", "ES", "DE", "FR", "IT", "JA", "ZH", "RU", "KO")
         $idx = $comboLang.SelectedIndex
         if ($idx -ge 0 -and $idx -lt $langCodes.Length) {
-            Update-UiLanguage -Lang $langCodes[$idx]
+            $chosen = $langCodes[$idx]
+            $script:AppConfig.Language = $chosen
+            Save-AppConfig -Config $script:AppConfig
+            Update-UiLanguage -Lang $chosen
+            Write-Status -Message "[USER] Idioma da interface alterado para: '$chosen' (Index $idx)" -Level "INFO"
         }
     })
 
@@ -2630,12 +3314,12 @@ function Select-GameInInspector {
     }
     Highlight-SelectedModeCard -Mode $modeCode
 
-    $modeText = "Universal (Feeder)"
+    $modeText = if ($d.ModeTextFeeder) { $d.ModeTextFeeder } else { "Universal (Feeder)" }
     if ($detected -eq "NATIVE_DLSS") {
-        $modeText = "DLSS Nativo"
+        $modeText = if ($d.ModeTextNative) { $d.ModeTextNative } else { "Native DLSS" }
     }
     elseif ($detected -like "*BRIDGE*") {
-        $modeText = "FSR2/XeSS (OptiScaler)"
+        $modeText = if ($d.ModeTextOpti) { $d.ModeTextOpti } else { "FSR2/XeSS (OptiScaler)" }
     }
 
     $isInstalled = Test-GameDlss5Installed -GameFolder $GameObj.Path
@@ -2649,7 +3333,9 @@ function Select-GameInInspector {
         Style-Button -Button $btnInstall -BaseColor ([System.Drawing.Color]::FromArgb(65, 140, 45)) -HoverColor ([System.Drawing.Color]::FromArgb(85, 175, 55)) -TextColor ([System.Drawing.Color]::White)
     }
     else {
-        $lblGameStatus.Text = "API: " + $GameObj.Api + "   Modo Ideal: " + $modeText
+        $idealPrefix = if ($d.ModeIdeal) { $d.ModeIdeal } else { "Ideal Mode: {0}" }
+        $modeFormatted = if ($idealPrefix -match '\{0\}') { $idealPrefix -f $modeText } else { ($idealPrefix + ": " + $modeText) }
+        $lblGameStatus.Text = "API: " + $GameObj.Api + "   " + $modeFormatted
         $lblGameStatus.ForeColor = [System.Drawing.Color]::FromArgb(118, 225, 125)
         
         $btnText = $d.BtnInstall
@@ -2658,14 +3344,20 @@ function Select-GameInInspector {
         Style-Button -Button $btnInstall -BaseColor ([System.Drawing.Color]::FromArgb(118, 185, 0)) -HoverColor ([System.Drawing.Color]::FromArgb(140, 220, 0)) -TextColor ([System.Drawing.Color]::Black)
     }
 
-    Write-Status -Message "Jogo selecionado: $($GameObj.Name) [$($GameObj.Api)]" -Level "INFO"
+    $script:AppConfig.LastSelectedGamePath = $GameObj.Path
+    Save-AppConfig -Config $script:AppConfig
+
+    $instTag = if ($isInstalled) { "INSTALADO" } else { "NAO INSTALADO" }
+    Write-Status -Message "[USER] Painel inspetor atualizado: '$($GameObj.Name)' | API: $($GameObj.Api) | Upscaler: $($GameObj.Upscaler) | Status: $instTag | Pasta: '$($GameObj.Path)'" -Level "INFO"
 }
 
 $gameList.Add_SelectedIndexChanged({
         if ($gameList.SelectedIndices.Count -gt 0) {
             $idx = $gameList.SelectedIndices[0]
             if ($script:CurrentGameLibrary -and $idx -lt $script:CurrentGameLibrary.Count) {
-                Select-GameInInspector -GameObj $script:CurrentGameLibrary[$idx]
+                $selGame = $script:CurrentGameLibrary[$idx]
+                Write-Status -Message "[USER] Clique na lista de jogos: Linha $idx -> Jogo '$($selGame.Name)'" -Level "INFO"
+                Select-GameInInspector -GameObj $selGame
             }
         }
     })
@@ -2691,221 +3383,400 @@ function Refresh-GameLibraryUI {
         $isInst = Test-GameDlss5Installed -GameFolder $g.Path
         $modeLabel = ""
         if ($isInst) {
-            $modeLabel = "[✓] DLSS 5 Ativo"
+            $modeLabel = if ($d.StatusActive) { $d.StatusActive } else { "[✓] DLSS 5 Active" }
         }
         else {
             if ($g.Upscaler -eq "NATIVE_DLSS") {
-                $modeLabel = "[Modo 1] DLSS"
+                $modeLabel = if ($d.ColModeDirect) { $d.ColModeDirect } else { "[Mode 1] DLSS" }
             }
             elseif ($g.Upscaler -eq "FSR2_BRIDGE" -or $g.Upscaler -eq "XESS_BRIDGE") {
-                $modeLabel = "[Modo 2] OptiScaler"
+                $modeLabel = if ($d.ColModeOpti) { $d.ColModeOpti } else { "[Mode 2] OptiScaler" }
             }
             else {
-                $modeLabel = "[Modo 3] Feeder"
+                $modeLabel = if ($d.ColModeFeeder) { $d.ColModeFeeder } else { "[Mode 3] Feeder" }
             }
         }
 
-        $item = New-Object System.Windows.Forms.ListViewItem($g.Name, $imgIdx)
-        [void]$item.SubItems.Add($g.Api)
-        [void]$item.SubItems.Add($modeLabel)
+        $item = New-Object System.Windows.Forms.ListViewItem([string]$g.Name, $imgIdx)
+        [void]$item.SubItems.Add([string]$g.Api)
+        [void]$item.SubItems.Add([string]$modeLabel)
         [void]$gameList.Items.Add($item)
     }
     $gameList.EndUpdate()
 }
 
-$btnScan.Add_Click({
-        $d = Get-Dict -Lang $script:CurrentLang
-        Write-Status -Message $d.StatusScanning -Level "INFO"
-        $form.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
-        if ($script:ProgressBar) {
-            $script:ProgressBar.Value = 0
-            $script:ProgressBar.Visible = $true
-        }
+# --- MOTOR DE VARREDURA ASSINCRONA (BACKGROUND WORKER RUNSPACE) ---
+$script:IsScanning = $false
+$script:ScanPowerShell = $null
+$script:ScanAsyncResult = $null
+$script:ScanRunspace = $null
+$script:ScanTimer = New-Object System.Windows.Forms.Timer
+$script:ScanTimer.Interval = 80
 
-        $games = Scan-DriveForGames -DriveLetter "ALL" -ProgressCallback {
-            param($pct, $name)
-            $script:StatusLabel.Text = "  Escaneando: $name ($pct%)..."
+function Start-LibraryScanAsync {
+    param([bool]$IsStartup = $false)
+    if ($script:IsScanning) { return }
+    $script:IsScanning = $true
+    
+    $d = Get-Dict -Lang $script:CurrentLang
+    if ($btnScan) { $btnScan.Enabled = $false }
+    if ($script:ProgressBar) {
+        $script:ProgressBar.Value = 0
+        $script:ProgressBar.Visible = $true
+    }
+    $lblStatus.Text = "  " + $d.StatusScanning
+    
+    $script:ScanSync = [hashtable]::Synchronized(@{
+        Pct         = 0
+        CurrentGame = ""
+        IsFinished  = $false
+        Results     = @()
+        Error       = ""
+    })
+    
+    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+    $neededFuncs = @(
+        "Get-Sha256", "Get-PeArchitecture", "Test-ValidPe", "Sanitize-PathString",
+        "Resolve-GameTarget", "Detect-GameGraphicsApi", "Detect-GameUpscalerType",
+        "Test-GameDlss5Installed", "Scan-DriveForGames"
+    )
+    foreach ($fn in $neededFuncs) {
+        if (Test-Path "Function:\$fn") {
+            $def = (Get-Item "Function:\$fn").Definition
+            $entry = New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry($fn, $def)
+            $iss.Commands.Add($entry)
+        }
+    }
+    
+    $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace($iss)
+    $rs.Open()
+    
+    $ps = [powershell]::Create()
+    $ps.Runspace = $rs
+    $driveTarget = if ($script:AppConfig.ScanDrives) { $script:AppConfig.ScanDrives } else { "ALL" }
+    
+    [void]$ps.AddScript({
+        param($sync, $targetDrive)
+        Add-Type -AssemblyName System.Drawing
+        Add-Type -AssemblyName System.Windows.Forms
+        try {
+            $games = Scan-DriveForGames -DriveLetter $targetDrive -ProgressCallback {
+                param($pct, $name)
+                $sync.Pct = $pct
+                $sync.CurrentGame = $name
+            }
+            $sync.Results = @($games)
+        }
+        catch {
+            $sync.Error = $_.Exception.Message
+        }
+        finally {
+            $sync.IsFinished = $true
+        }
+    })
+    [void]$ps.AddArgument($script:ScanSync)
+    [void]$ps.AddArgument($driveTarget)
+    
+    $script:ScanPowerShell = $ps
+    $script:ScanRunspace = $rs
+    $script:ScanAsyncResult = $ps.BeginInvoke()
+    
+    $script:ScanTimer.Start()
+}
+
+$script:ScanTimer.Add_Tick({
+    $d = Get-Dict -Lang $script:CurrentLang
+    if ($script:ScanSync.IsFinished -or ($script:ScanAsyncResult -and $script:ScanAsyncResult.IsCompleted)) {
+        $script:ScanTimer.Stop()
+        $script:IsScanning = $false
+        
+        try {
+            if ($script:ScanPowerShell -and $script:ScanAsyncResult) {
+                $null = $script:ScanPowerShell.EndInvoke($script:ScanAsyncResult)
+            }
+        } catch {}
+        
+        try {
+            if ($script:ScanPowerShell) { $script:ScanPowerShell.Dispose(); $script:ScanPowerShell = $null }
+            if ($script:ScanRunspace) { $script:ScanRunspace.Close(); $script:ScanRunspace.Dispose(); $script:ScanRunspace = $null }
+        } catch {}
+        
+        if ($btnScan) { $btnScan.Enabled = $true }
+        if ($script:ProgressBar) { $script:ProgressBar.Visible = $false }
+        
+        $newGames = @($script:ScanSync.Results)
+        
+        # Non-destructive merge with custom games
+        $mergedMap = @{}
+        foreach ($g in $newGames) {
+            if ($g -and $g.Path) {
+                $mergedMap[$g.Path.ToLower()] = $g
+            }
+        }
+        foreach ($existing in $script:CurrentGameLibrary) {
+            if ($existing -and $existing.Path) {
+                $low = $existing.Path.ToLower()
+                if (-not $mergedMap.ContainsKey($low)) {
+                    $mergedMap[$low] = $existing
+                }
+            }
+        }
+        
+        $finalList = @($mergedMap.Values | Sort-Object -Property Order, Name)
+        $script:CurrentGameLibrary = $finalList
+        Save-GamesCache -Games $finalList
+        Refresh-GameLibraryUI -Games $finalList
+        
+        $msg = $d.StatusScanDone -f $finalList.Count
+        Write-Status -Message $msg -Level "OK"
+        
+        if ($finalList.Count -gt 0 -and (-not $script:SelectedGameObj)) {
+            $targetIdx = 0
+            if ($script:AppConfig.LastSelectedGamePath) {
+                for ($i = 0; $i -lt $finalList.Count; $i++) {
+                    if ($finalList[$i].Path.ToLower() -eq $script:AppConfig.LastSelectedGamePath.ToLower()) {
+                        $targetIdx = $i
+                        break
+                    }
+                }
+            }
+            if ($gameList.Items.Count -gt $targetIdx) {
+                $gameList.Items[$targetIdx].Selected = $true
+            }
+        }
+    }
+    else {
+        $pct = [Math]::Min(100, [Math]::Max(0, [int]$script:ScanSync.Pct))
+        if ($script:ProgressBar) { $script:ProgressBar.Value = $pct }
+        if ($script:ScanSync.CurrentGame) {
+            $scanFmt = if ($d.StatusScanningBackground) { $d.StatusScanningBackground } else { "Scanning: {0} ({1}%)..." }
+            $script:StatusLabel.Text = "  " + ($scanFmt -f $script:ScanSync.CurrentGame, $pct)
+        }
+    }
+})
+
+$btnScan.Add_Click({
+    Write-Status -Message "[USER] Botao 'ESCANEAR DISCOS' acionado pelo usuario." -Level "INFO"
+    Start-LibraryScanAsync -IsStartup $false
+})
+
+$btnBrowse.Add_Click({
+    $d = Get-Dict -Lang $script:CurrentLang
+    Write-Status -Message "[USER] Botao 'PROCURAR JOGO' acionado. Dialogo de selecao de diretorio aberto." -Level "INFO"
+    $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
+    $fbd.Description = if ($d.FolderBrowseDialog) { $d.FolderBrowseDialog } else { "Select the folder where the game is installed:" }
+    if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        Write-Status -Message "[USER] Pasta selecionada pelo usuario no dialogo: '$($fbd.SelectedPath)'" -Level "INFO"
+        try {
+            $resolved = Resolve-GameTarget -TargetPath $fbd.SelectedPath
+            if (-not $resolved -or -not $resolved.Executable) {
+                Write-Status -Message "[USER] Nenhum executavel valido encontrado na pasta selecionada: '$($fbd.SelectedPath)'" -Level "WARN"
+                $errMsg = if ($d.GameNotFound) { $d.GameNotFound } else { "No valid game executable found in selected folder." }
+                [System.Windows.Forms.MessageBox]::Show($errMsg, "1 Click DLSS 5", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                return
+            }
+            $api = Detect-GameGraphicsApi -TargetExe $resolved.Executable -GameFolder $resolved.InstallFolder
+            $upscaler = Detect-GameUpscalerType -GameFolder $resolved.InstallFolder -GameRoot $resolved.Root
+            $isInstalled = Test-GameDlss5Installed -GameFolder $resolved.InstallFolder
+            $gObj = [pscustomobject]@{
+                Order       = 1
+                Name        = (Split-Path -Leaf $fbd.SelectedPath)
+                Path        = $fbd.SelectedPath
+                Api         = "$api ($($resolved.Architecture))"
+                Upscaler    = $upscaler
+                IsInstalled = $isInstalled
+                Icon        = $resolved.Icon
+                ExeName     = $resolved.ExeName
+            }
+            
+            # Non-destructive merge
+            $existing = @($script:CurrentGameLibrary | Where-Object { $_.Path.ToLower() -ne $gObj.Path.ToLower() })
+            $script:CurrentGameLibrary = @($gObj) + $existing
+            
+            # Persist custom game path
+            if ($script:AppConfig.CustomGamePaths -notcontains $fbd.SelectedPath) {
+                $script:AppConfig.CustomGamePaths += $fbd.SelectedPath
+                Save-AppConfig -Config $script:AppConfig
+            }
+            
+            Save-GamesCache -Games $script:CurrentGameLibrary
+            Refresh-GameLibraryUI -Games $script:CurrentGameLibrary
+            Select-GameInInspector -GameObj $gObj
+            if ($gameList.Items.Count -gt 0) {
+                $gameList.Items[0].Selected = $true
+            }
+        }
+        catch {
+            $ctx = if ($script:CurrentLang -eq "PT") { "Selecao de Pasta" } else { "Folder Selection" }
+            Show-FriendlyErrorDialog -Ex $_.Exception -Context $ctx -TargetPath $fbd.SelectedPath
+        }
+    }
+})
+
+$btnInstall.Add_Click({
+    $d = Get-Dict -Lang $script:CurrentLang
+    if (-not $script:SelectedGameObj) {
+        Write-Status -Message "[USER] Botao 'INSTALAR DLSS 5' clicado sem jogo selecionado." -Level "WARN"
+        $selMsg = if ($d.SelectGameFirst) { $d.SelectGameFirst } else { "Please select a game in the library or click 'BROWSE GAME' first." }
+        [System.Windows.Forms.MessageBox]::Show($selMsg, "1 Click DLSS 5", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        return
+    }
+    Write-Status -Message "[USER] Botao 'INSTALAR DLSS 5' clicado para o jogo: '$($script:SelectedGameObj.Name)' | Pasta: '$($script:SelectedGameObj.Path)' | Modo Solicitado: '$($script:SelectedMode)'" -Level "INFO" 
+
+    $oldText = $btnInstall.Text
+    $btnInstall.Enabled = $false
+    $btnLaunch.Enabled = $false
+    $btnUninstall.Enabled = $false
+    $btnBrowse.Enabled = $false
+    $btnScan.Enabled = $false
+    $btnInstall.Text = if ($d.InstallingDlss5) { $d.InstallingDlss5 } else { "⏳ INSTALLING DLSS 5..." }
+    $form.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+
+    if ($script:TipPanel) { $script:TipPanel.Visible = $false }
+    if ($script:ProgressPanel) {
+        $script:ProgressPanel.Visible = $true
+        $script:MainProgressBar.Value = 5
+        $script:LblProgressPct.Text = "5%"
+        $script:LblProgressStep.Text = if ($d.ProgressValidating) { $d.ProgressValidating } else { "Validating game and write permissions..." }
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+    if ($script:ProgressBar) {
+        $script:ProgressBar.Value = 5
+        $script:ProgressBar.Visible = $true
+    }
+
+    try {
+        Install-Dlss5 -TargetPath $script:SelectedGameObj.Path -SelectedMode $script:SelectedMode -ProgressCallback {
+            param($pct, $msg)
+            Write-Status -Message $msg -Level "INFO"
+            if ($script:ProgressPanel) {
+                $clamped = [Math]::Min(100, [Math]::Max(0, [int]$pct))
+                $script:MainProgressBar.Value = $clamped
+                $script:LblProgressPct.Text = "$clamped%"
+                $script:LblProgressStep.Text = $msg
+            }
             if ($script:ProgressBar) {
                 $script:ProgressBar.Value = [Math]::Min(100, [Math]::Max(0, [int]$pct))
             }
             [System.Windows.Forms.Application]::DoEvents()
+            Start-Sleep -Milliseconds 180
         }
-
-        $script:CurrentGameLibrary = $games
-        Refresh-GameLibraryUI -Games $games
+        
+        $script:SelectedGameObj.IsInstalled = $true
+        Save-GamesCache -Games $script:CurrentGameLibrary
+        Refresh-GameLibraryUI -Games $script:CurrentGameLibrary
+        Select-GameInInspector -GameObj $script:SelectedGameObj
+    }
+    catch {
+        $ctx = if ($script:CurrentLang -eq "PT") { "Instalacao do DLSS 5" } else { "DLSS 5 Installation" }
+        Show-FriendlyErrorDialog -Ex $_.Exception -Context $ctx -TargetPath $script:SelectedGameObj.Path -SelectedMode $script:SelectedMode
+    }
+    finally {
+        Start-Sleep -Milliseconds 250
+        if ($script:ProgressPanel) { $script:ProgressPanel.Visible = $false }
+        if ($script:TipPanel) { $script:TipPanel.Visible = $true }
         if ($script:ProgressBar) { $script:ProgressBar.Visible = $false }
         $form.Cursor = [System.Windows.Forms.Cursors]::Default
+        $btnInstall.Enabled = $true
+        $btnLaunch.Enabled = $true
+        $btnUninstall.Enabled = $true
+        $btnBrowse.Enabled = $true
+        $btnScan.Enabled = $true
+        $btnInstall.Text = $oldText
+    }
+})
 
-        Write-Status -Message ($d.StatusScanDone -f $games.Count) -Level "OK"
-        if ($games.Count -gt 0) {
-            $gameList.Items[0].Selected = $true
-        }
-    })
+$btnLaunch.Add_Click({
+    if (-not $script:SelectedGameObj) { return }
+    Write-Status -Message "[USER] Botao 'INICIAR JOGO' clicado para: '$($script:SelectedGameObj.Name)' | Pasta: '$($script:SelectedGameObj.Path)'" -Level "INFO"
+    try {
+        $resolved = Resolve-GameTarget -TargetPath $script:SelectedGameObj.Path
+        Start-GameExecutable -ExecutablePath $resolved.Executable
+    }
+    catch {
+        $ctx = if ($script:CurrentLang -eq "PT") { "Inicializacao do Jogo" } else { "Game Launch" }
+        Show-FriendlyErrorDialog -Ex $_.Exception -Context $ctx -TargetPath $script:SelectedGameObj.Path
+    }
+})
 
-$btnBrowse.Add_Click({
-        $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
-        $fbd.Description = "Selecione a pasta onde o jogo esta instalado:"
-        if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-            try {
-                $resolved = Resolve-GameTarget -TargetPath $fbd.SelectedPath
-                $api = Detect-GameGraphicsApi -TargetExe $resolved.Executable -GameFolder $resolved.InstallFolder
-                $upscaler = Detect-GameUpscalerType -GameFolder $resolved.InstallFolder -GameRoot $resolved.Root
-                $gObj = [pscustomobject]@{
-                    Order    = 1
-                    Name     = (Split-Path -Leaf $fbd.SelectedPath)
-                    Path     = $fbd.SelectedPath
-                    Api      = "$api ($($resolved.Architecture))"
-                    Upscaler = $upscaler
-                    Icon     = $resolved.Icon
-                    ExeName  = $resolved.ExeName
-                }
-                $script:CurrentGameLibrary = @($gObj)
-                Refresh-GameLibraryUI -Games @($gObj)
-                Select-GameInInspector -GameObj $gObj
-            }
-            catch {
-                Show-FriendlyErrorDialog -Ex $_.Exception -Context "Sele  o de Pasta" -TargetPath $fbd.SelectedPath
-            }
-        }
-    })
-
-$btnInstall.Add_Click({
-        if (-not $script:SelectedGameObj) {
-            [System.Windows.Forms.MessageBox]::Show("Por favor, selecione um jogo na biblioteca ou clique em 'PROCURAR JOGO' primeiro.", "1 Click DLSS 5", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-            return
-        }
-
-        $oldText = $btnInstall.Text
-        $btnInstall.Enabled = $false
-        $btnLaunch.Enabled = $false
-        $btnUninstall.Enabled = $false
-        $btnBrowse.Enabled = $false
-        $btnScan.Enabled = $false
-        $btnInstall.Text = "⏳ INSTALANDO DLSS 5..."
-        $form.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
-
-        if ($script:TipPanel) { $script:TipPanel.Visible = $false }
-        if ($script:ProgressPanel) {
-            $script:ProgressPanel.Visible = $true
-            $script:MainProgressBar.Value = 5
-            $script:LblProgressPct.Text = "5%"
-            $script:LblProgressStep.Text = "Validando jogo e permissoes de escrita..."
-            [System.Windows.Forms.Application]::DoEvents()
-        }
-        if ($script:ProgressBar) {
-            $script:ProgressBar.Value = 5
-            $script:ProgressBar.Visible = $true
-        }
-
+$btnUninstall.Add_Click({
+    if (-not $script:SelectedGameObj) { return }
+    Write-Status -Message "[USER] Botao 'RESTAURAR ORIGINAL' clicado para: '$($script:SelectedGameObj.Name)' | Pasta: '$($script:SelectedGameObj.Path)'" -Level "WARN"
+    $d = Get-Dict -Lang $script:CurrentLang
+    $msg = if ($d.ConfirmRestoreMsg) { $d.ConfirmRestoreMsg } else { "Do you really want to remove all DLSS 5 files and restore the game to its original state?" }
+    $title = if ($d.ConfirmRestoreTitle) { $d.ConfirmRestoreTitle } else { "Confirm Restoration" }
+    $res = [System.Windows.Forms.MessageBox]::Show($msg, $title, [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+    if ($res -eq [System.Windows.Forms.DialogResult]::Yes) {
+        Write-Status -Message "[USER] Confirmacao de restauracao aceita pelo usuario (DialogResult=Yes)." -Level "WARN" 
         try {
-            Install-Dlss5 -TargetPath $script:SelectedGameObj.Path -SelectedMode $script:SelectedMode -ProgressCallback {
-                param($pct, $msg)
-                Write-Status -Message $msg -Level "INFO"
-                if ($script:ProgressPanel) {
-                    $clamped = [Math]::Min(100, [Math]::Max(0, [int]$pct))
-                    $script:MainProgressBar.Value = $clamped
-                    $script:LblProgressPct.Text = "$clamped%"
-                    $script:LblProgressStep.Text = $msg
-                }
-                if ($script:ProgressBar) {
-                    $script:ProgressBar.Value = [Math]::Min(100, [Math]::Max(0, [int]$pct))
-                }
-                [System.Windows.Forms.Application]::DoEvents()
-                Start-Sleep -Milliseconds 180
-            }
+            Uninstall-Dlss5 -TargetPath $script:SelectedGameObj.Path
+            $script:SelectedGameObj.IsInstalled = $false
+            Save-GamesCache -Games $script:CurrentGameLibrary
+            Refresh-GameLibraryUI -Games $script:CurrentGameLibrary
             Select-GameInInspector -GameObj $script:SelectedGameObj
         }
         catch {
-            Show-FriendlyErrorDialog -Ex $_.Exception -Context "Instalacao do DLSS 5" -TargetPath $script:SelectedGameObj.Path -SelectedMode $script:SelectedMode
+            $ctx = if ($script:CurrentLang -eq "PT") { "Restauracao de Fabrica" } else { "Factory Restoration" }
+            Show-FriendlyErrorDialog -Ex $_.Exception -Context $ctx -TargetPath $script:SelectedGameObj.Path
         }
-        finally {
-            Start-Sleep -Milliseconds 250
-            if ($script:ProgressPanel) { $script:ProgressPanel.Visible = $false }
-            if ($script:TipPanel) { $script:TipPanel.Visible = $true }
-            if ($script:ProgressBar) { $script:ProgressBar.Visible = $false }
-            $form.Cursor = [System.Windows.Forms.Cursors]::Default
-            $btnInstall.Enabled = $true
-            $btnLaunch.Enabled = $true
-            $btnUninstall.Enabled = $true
-            $btnBrowse.Enabled = $true
-            $btnScan.Enabled = $true
-            $btnInstall.Text = $oldText
-        }
-    })
-
-$btnLaunch.Add_Click({
-        if (-not $script:SelectedGameObj) { return }
-        try {
-            $resolved = Resolve-GameTarget -TargetPath $script:SelectedGameObj.Path
-            Start-GameExecutable -ExecutablePath $resolved.Executable
-        }
-        catch {
-            Show-FriendlyErrorDialog -Ex $_.Exception -Context "Inicializa  o do Jogo" -TargetPath $script:SelectedGameObj.Path
-        }
-    })
-
-$btnUninstall.Add_Click({
-        if (-not $script:SelectedGameObj) { return }
-        $res = [System.Windows.Forms.MessageBox]::Show("Deseja realmente remover todos os arquivos do DLSS 5 e restaurar o jogo ao estado original de fabrica?", "Confirmar Restauracao", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
-        if ($res -eq [System.Windows.Forms.DialogResult]::Yes) {
-            try {
-                Uninstall-Dlss5 -TargetPath $script:SelectedGameObj.Path
-                Select-GameInInspector -GameObj $script:SelectedGameObj
-            }
-            catch {
-                Show-FriendlyErrorDialog -Ex $_.Exception -Context "Restaura  o de F brica" -TargetPath $script:SelectedGameObj.Path
-            }
-        }
-    })
+    }
+})
 
 $btnOpenFolder.Add_Click({
-        if ($script:SelectedGameObj -and (Test-Path -LiteralPath $script:SelectedGameObj.Path)) {
-            Start-Process "explorer.exe" -ArgumentList "`"$($script:SelectedGameObj.Path)`""
-        }
-    })
+    if ($script:SelectedGameObj -and (Test-Path -LiteralPath $script:SelectedGameObj.Path)) {
+        Write-Status -Message "[USER] Botao 'ABRIR PASTA DO JOGO' acionado para: '$($script:SelectedGameObj.Path)'" -Level "INFO"
+        Start-Process "explorer.exe" -ArgumentList "`"$($script:SelectedGameObj.Path)`""
+    }
+})
 
 $txtSearch.Add_TextChanged({
-        $term = $txtSearch.Text.Trim().ToLower()
-        if ($null -eq $script:CurrentGameLibrary) { return }
-        if ([string]::IsNullOrWhiteSpace($term)) {
-            Refresh-GameLibraryUI -Games $script:CurrentGameLibrary
-        }
-        else {
-            $filtered = @($script:CurrentGameLibrary | Where-Object { $_.Name.ToLower().Contains($term) -or $_.Api.ToLower().Contains($term) })
-            Refresh-GameLibraryUI -Games $filtered
-        }
-    })
+    $term = $txtSearch.Text.Trim().ToLower()
+    if ($null -eq $script:CurrentGameLibrary) { return }
+    if ([string]::IsNullOrWhiteSpace($term)) {
+        Refresh-GameLibraryUI -Games $script:CurrentGameLibrary
+    }
+    else {
+        $filtered = @($script:CurrentGameLibrary | Where-Object { $_.Name.ToLower().Contains($term) -or $_.Api.ToLower().Contains($term) })
+        Refresh-GameLibraryUI -Games $filtered
+        Write-Status -Message "[USER] Pesquisa na biblioteca: '$term' (Filtrados: $($filtered.Count) de $($script:CurrentGameLibrary.Count) jogos)" -Level "INFO" 
+    }
+})
 
-# --- AUTO-DESCOBERTA INSTANT NEA AO INICIAR ---
-$form.Add_Shown({
-        $d = Get-Dict -Lang $script:CurrentLang
-        $lblStatus.Text = "  Carregando biblioteca de jogos instalados no PC..."
-        if ($script:ProgressBar) {
-            $script:ProgressBar.Value = 0
-            $script:ProgressBar.Visible = $true
-        }
-        [System.Windows.Forms.Application]::DoEvents()
+# --- INICIALIZACAO COMPLETA DA INTERFACE E CARREGAMENTO DE CACHE ---
+Update-UiLanguage -Lang $script:CurrentLang
 
-        $autoGames = Scan-DriveForGames -DriveLetter "ALL" -ProgressCallback {
-            param($pct, $name)
-            $lblStatus.Text = "  Carregando: $name ($pct%)..."
-            if ($script:ProgressBar) {
-                $script:ProgressBar.Value = [Math]::Min(100, [Math]::Max(0, [int]$pct))
+if (-not $env:DLSS5_HEADLESS) {
+    $d = Get-Dict -Lang $script:CurrentLang
+    $cached = @(Get-GamesCache)
+    if ($cached.Count -gt 0) {
+        $script:CurrentGameLibrary = $cached
+        Refresh-GameLibraryUI -Games $cached
+        $lblStatus.Text = "  " + ($d.StatusScanDone -f $cached.Count)
+        
+        $selectedIdx = 0
+        if ($script:AppConfig.LastSelectedGamePath) {
+            for ($i = 0; $i -lt $cached.Count; $i++) {
+                if ($cached[$i].Path.ToLower() -eq $script:AppConfig.LastSelectedGamePath.ToLower()) {
+                    $selectedIdx = $i
+                    break
+                }
             }
-            [System.Windows.Forms.Application]::DoEvents()
         }
-        if ($script:ProgressBar) { $script:ProgressBar.Visible = $false }
+        if ($gameList.Items.Count -gt $selectedIdx) {
+            $gameList.Items[$selectedIdx].Selected = $true
+        }
+    }
+    else {
+        $lblStatus.Text = "  " + $d.StatusReady
+    }
 
-        if ($autoGames.Count -gt 0) {
-            $script:CurrentGameLibrary = $autoGames
-            Refresh-GameLibraryUI -Games $autoGames
-            $lblStatus.Text = "  " + ($d.StatusScanDone -f $autoGames.Count)
-            $gameList.Items[0].Selected = $true
-        }
-        else {
-            $lblStatus.Text = "  " + $d.StatusReady
+    $form.Add_Shown({
+        # Se configurado para varredura automatica, executa em segundo plano SEM travar a interface
+        if ($script:AppConfig.AutoScanOnStartup) {
+            Start-LibraryScanAsync -IsStartup $true
         }
     })
+}
 
 # Inicializa  o
 Write-Status -Message "1 Click DLSS 5 v$($script:Version) pronto e operacional." -Level "OK"

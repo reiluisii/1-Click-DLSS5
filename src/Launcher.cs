@@ -12,8 +12,8 @@ using System.Windows.Forms;
 [assembly: AssemblyProduct("1 Click DLSS 5")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 MIT License")]
 [assembly: AssemblyTrademark("DLSS 5 Neural Control Center")]
-[assembly: AssemblyVersion("2.5.3.0")]
-[assembly: AssemblyFileVersion("2.5.3.0")]
+[assembly: AssemblyVersion("2.7.0.0")]
+[assembly: AssemblyFileVersion("2.7.0.0")]
 
 namespace OneClickDLSS5
 {
@@ -33,6 +33,7 @@ namespace OneClickDLSS5
 
             string baseDir = AppDomain.CurrentDomain.BaseDirectory;
             string scriptPath = Path.Combine(baseDir, @"core\1-Click-DLSS5.ps1");
+            bool isPt = System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName.Equals("pt", StringComparison.OrdinalIgnoreCase);
 
             if (!File.Exists(scriptPath))
             {
@@ -43,9 +44,13 @@ namespace OneClickDLSS5
                 }
                 else
                 {
+                    string notFoundMsg = isPt 
+                        ? "Não foi possível localizar o script principal do 1 Click DLSS 5 em:\n" + scriptPath 
+                        : "Could not locate the main 1 Click DLSS 5 script at:\n" + scriptPath;
+                    string notFoundTitle = isPt ? "1 Click DLSS 5 - Arquivo Não Encontrado" : "1 Click DLSS 5 - Script Not Found";
                     MessageBox.Show(
-                        "Não foi possível localizar o script principal do 1 Click DLSS 5 em:\n" + scriptPath,
-                        "1 Click DLSS 5 - Arquivo Não Encontrado",
+                        notFoundMsg,
+                        notFoundTitle,
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Error);
                     return 1;
@@ -78,9 +83,13 @@ namespace OneClickDLSS5
 
                     if (proc.ExitCode != 0 && !string.IsNullOrEmpty(stderr) && !stderr.Contains("OperationCanceledException"))
                     {
+                        string errMsg = isPt
+                            ? "Ocorreu um erro durante a inicialização do 1 Click DLSS 5:\n\n" + stderr
+                            : "An error occurred during 1 Click DLSS 5 startup:\n\n" + stderr;
+                        string errTitle = isPt ? "1 Click DLSS 5 - Erro" : "1 Click DLSS 5 - Error";
                         MessageBox.Show(
-                            "Ocorreu um erro durante a inicialização do 1 Click DLSS 5:\n\n" + stderr,
-                            "1 Click DLSS 5 - Erro",
+                            errMsg,
+                            errTitle,
                             MessageBoxButtons.OK,
                             MessageBoxIcon.Warning);
                     }
@@ -89,9 +98,13 @@ namespace OneClickDLSS5
             }
             catch (Exception ex)
             {
+                string failMsg = isPt
+                    ? "Falha ao iniciar o 1 Click DLSS 5:\n\n" + ex.Message
+                    : "Failed to launch 1 Click DLSS 5:\n\n" + ex.Message;
+                string failTitle = isPt ? "1 Click DLSS 5 - Falha Crítica" : "1 Click DLSS 5 - Launch Failure";
                 MessageBox.Show(
-                    "Falha ao iniciar o 1 Click DLSS 5:\n\n" + ex.Message,
-                    "1 Click DLSS 5 - Falha Crítica",
+                    failMsg,
+                    failTitle,
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
                 return 1;

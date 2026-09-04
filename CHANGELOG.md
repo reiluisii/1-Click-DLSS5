@@ -2,6 +2,48 @@
 
 All notable changes, architectural overhauls, and bug fixes for the **1 Click DLSS 5** project are documented in this file.
 
+## [v2.7.0-beta] - 2026-09-04
+
+### 🕹️ Universal Console Emulator Support
+- **Native Detection & Injection for 12+ Console Generations:**
+  - Added dedicated executable signatures and heuristics for PlayStation 1 (DuckStation, ePSXe, Beetle/Mednafen), PlayStation 2 (PCSX2), PlayStation 3 (RPCS3), PlayStation 4 (shadPS4), PS Vita (Vita3K), Nintendo Switch (Ryujinx, Yuzu, Suyu, Eden, Torzu), Nintendo Wii & GameCube (Dolphin), Nintendo Wii U (Cemu), Nintendo 3DS (Citra, Lime3DS, Azahar), Nintendo DS & GBA (melonDS, DeSmuME, mGBA, No$GBA, VBA), Nintendo Retro (Project64, Snes9x, Mesen, FCEUX, Nestopia), Xbox & Xbox 360 (Xenia, Xenia-Canary, Cxbx-Reloaded), and PSP / Arcade / Multi-System (PPSSPP, Flycast, Redream, RetroArch, MAME, ScummVM).
+  - Extended multi-drive scanner to automatically scan `\Emulators`, `\Emuladores`, `\Emu`, `\RetroBat\emulators`, `\LaunchBox\Emulators`, `\Playnite\Emulators`, `%LOCALAPPDATA%\Programs`, `%APPDATA%\rpcs3`, and `ProgramFiles`.
+
+### 🔍 Deep Continuous Hardware & System Telemetry Logging Engine
+- **Millisecond Timestamp Precision:**
+  - Every entry in `core/1-Click-DLSS5.log` now features high-precision timestamps: `[yyyy-MM-dd HH:mm:ss.fff]`.
+- **System Audit Banner on Startup:**
+  - Captures full hardware snapshot: Windows caption, display version, build number, machine uptime, elevated admin status, CPU model, physical/logical cores, max clock, dGPU vs iGPU identification, driver version and release date, dedicated VRAM, HAGS state, physical/virtual RAM total and percent free, all storage partitions with filesystem format and free space, and multi-monitor setup with primary display and resolutions.
+
+### 👤 Chronological User Interaction Logging (`[USER]`)
+- **Complete In-App Audit Trail:**
+  - Added detailed telemetry tracking user clicks in the game library ListView, search box input with filter match counts, manual mode card toggles, language dropdown selections, startup auto-scan checkbox toggles, manual browse dialog interactions, Drag & Drop imports, install button executions, process start PIDs and working directories, and factory restore confirmation decisions.
+
+### 📦 Forensic Installation & Factory Restoration Engine
+- **Byte-Level Verification & Anti-Contamination:**
+  - Pre-flight write permission verification on target directories.
+  - Granular logging of each injected component with source name, target path, and exact byte size.
+  - Granular logging of each backed-up original game file with byte size.
+  - Strict anti-contamination filter preventing previous DLSS 5 artifacts from being copied into factory backups.
+  - Step-by-step restoration telemetry logging each restored file with KB size, each purged artifact with KB size, and cleanup of generated directories (`reshade-shaders`, `host64`, `layer-x64`).
+  - Full exception logging with diagnostic error codes, probable cause, actionable fixes, complete stack traces, and tracking of `[1-CLICK AUTO FIX]` usage.
+
+### ⚡ DirectX 12 RHI & Dual-GPU Laptop Compatibility (Issue #9)
+- **High-Performance GPU Preference Registration:**
+  - Auto-configures the target game executable in Windows DirectX preferences (`HKCU:\Software\Microsoft\DirectX\UserGpuPreferences`) to force dedicated high-performance GPU usage, eliminating the DX12 RHI / adapter selection failure on Windows 11 hybrid laptops.
+  - Proactive pre-launch cleanup of conflicting `sl.dlss_nr.dll` files.
+  - Pre-launch PE dependency auto-healing for Unreal Engine 5 titles (e.g., *S.T.A.L.K.E.R. 2*).
+
+### 🚀 Non-Blocking Background Library Scanner & UI Language Auto-Detection
+- **Zero-Freeze Startup:**
+  - Drive scanning moved to background thread with thread-safe UI updates, resolving initial 1-2 minute app freezes on systems with large drives.
+  - Persistent cache (`games_cache.json`) for instant library populating on launch.
+  - Added "Escanear ao iniciar" / "Scan on startup" checkbox in toolbar.
+- **Native OS Language Detection:**
+  - Automatically queries Windows UI culture on first startup and configures the interface in the user's native tongue (PT, EN, ES, DE, FR, IT, JA, ZH, RU, KO) with graceful English fallback.
+
+---
+
 ## [v2.6.0-release] - 2026-09-03
 
 ### 🛡️ Vigilant Game Integrity Engine & Universal Runtime Auto-Healing
