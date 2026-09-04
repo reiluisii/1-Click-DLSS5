@@ -187,6 +187,93 @@ function Get-PeArchitecture {
     }
 }
 
+function Get-SteamAppIdForFolder {
+    # Descobre o AppID Steam a partir de ...\steamapps\common\<installdir> lendo os appmanifest_*.acf
+    param([string]$GameFolder)
+    try {
+        $m = [regex]::Match($GameFolder, '(?i)^(.*\\steamapps)\\common\\([^\\]+)')
+        if (-not $m.Success) { return $null }
+        $steamapps = $m.Groups[1].Value
+        $installDir = $m.Groups[2].Value
+        foreach ($acf in Get-ChildItem -LiteralPath $steamapps -Filter "appmanifest_*.acf" -File -ErrorAction SilentlyContinue) {
+            $c = Get-Content -LiteralPath $acf.FullName -Raw -ErrorAction SilentlyContinue
+            if ($c -match ('(?i)"installdir"\s+"' + [regex]::Escape($installDir) + '"')) {
+                $idm = [regex]::Match($c, '"appid"\s+"(\d+)"')
+                if ($idm.Success) { return $idm.Groups[1].Value }
+            }
+        }
+    }
+    catch {}
+    return $null
+}
+
+function Get-ReShadeAppsIniPath {
+    # ReShade 6.x mantem a camada Vulkan global em %ProgramData%\ReShade (registrada em HKLM)
+    return (Join-Path $env:ProgramData "ReShade\ReShadeApps.ini")
+}
+
+function Test-ReShadeVulkanLayerRegistered {
+    foreach ($k in @("HKLM:\SOFTWARE\Khronos\Vulkan\ImplicitLayers", "HKCU:\Software\Khronos\Vulkan\ImplicitLayers")) {
+        $v = Get-ItemProperty -Path $k -ErrorAction SilentlyContinue
+        if ($v -and (($v.PSObject.Properties | Where-Object { $_.Name -match 'ReShade64\.json$' }).Count -gt 0)) { return $true }
+    }
+    return $false
+}
+
+function Install-ReShadeVulkanLayer {
+    # Jogos Vulkan nao carregam dxgi.dll: o ReShade precisa ser registrado como camada Vulkan implicita.
+    # O instalador oficial faz isso em modo silencioso (--headless); a camada global exige UAC uma unica vez.
+    param([string]$TargetExe)
+    $setup = Join-Path (Get-DLSS5PayloadDirectory) "ReShade_Setup_6.8.0_Addon.exe"
+    if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) { throw "ERR_RESHADE_SETUP_MISSING: ReShade_Setup_6.8.0_Addon.exe nao encontrado no payload." }
+    $args = @("`"$TargetExe`"", "--api", "vulkan", "--headless")
+    # 1a tentativa: silenciosa, sem elevacao (basta quando a camada ja esta registrada na maquina)
+    [void](Start-Process -FilePath $setup -ArgumentList $args -PassThru -Wait -WindowStyle Hidden)
+    if (-not (Test-ReShadeVulkanLayerRegistered)) {
+        Write-Status -Message "Registrando a camada Vulkan do ReShade (pedido de administrador unico)..." -Level "INFO"
+        try { [void](Start-Process -FilePath $setup -ArgumentList $args -Verb RunAs -PassThru -Wait) } catch {}
+    }
+    $layerOk = Test-ReShadeVulkanLayerRegistered
+    $appsIni = Get-ReShadeAppsIniPath
+    $registered = $false
+    if (Test-Path -LiteralPath $appsIni -PathType Leaf) {
+        $registered = ((Get-Content -LiteralPath $appsIni -Raw) -match [regex]::Escape($TargetExe))
+    }
+    if (-not $registered) {
+        # Fallback: acrescenta o executavel a lista Apps= do ReShadeApps.ini (formato do ReShade 6.x)
+        try {
+            $dir = Split-Path -Parent $appsIni
+            if (-not (Test-Path -LiteralPath $dir)) { [void](New-Item -ItemType Directory -Path $dir -Force) }
+            $lines = @()
+            if (Test-Path -LiteralPath $appsIni -PathType Leaf) { $lines = @(Get-Content -LiteralPath $appsIni) }
+            $idx = [array]::FindIndex($lines, [Predicate[string]] { param($l) $l -match '^Apps=' })
+            if ($idx -ge 0) { $lines[$idx] = ($lines[$idx].TrimEnd(',') + "," + $TargetExe) } else { $lines += "Apps=$TargetExe" }
+            [System.IO.File]::WriteAllLines($appsIni, $lines, (New-Object System.Text.UTF8Encoding($false)))
+            $registered = $true
+        }
+        catch {}
+    }
+    Write-Status -Message ("Camada Vulkan do ReShade: registro=" + $(if ($layerOk) { "OK" } else { "AUSENTE" }) + " | ReShadeApps.ini=" + $(if ($registered) { "OK" } else { "FALHOU" })) -Level $(if ($layerOk) { "OK" } else { "WARN" })
+    return $layerOk
+}
+
+function Remove-ReShadeVulkanApp {
+    param([string]$TargetExe)
+    $appsIni = Get-ReShadeAppsIniPath
+    if (-not (Test-Path -LiteralPath $appsIni -PathType Leaf)) { return }
+    try {
+        $lines = @(Get-Content -LiteralPath $appsIni | ForEach-Object {
+            if ($_ -match '^Apps=') {
+                $items = @(($_.Substring(5) -split ',') | Where-Object { $_.Trim() -ne '' -and $_.Trim() -ine $TargetExe })
+                "Apps=" + ($items -join ',')
+            }
+            elseif ($_.Trim() -ine $TargetExe) { $_ }
+        })
+        [System.IO.File]::WriteAllLines($appsIni, $lines, (New-Object System.Text.UTF8Encoding($false)))
+    }
+    catch {}
+}
+
 function Test-ValidPe {
     param([Parameter(Mandatory = $true)][string]$Path)
     $arch = Get-PeArchitecture -Path $Path
@@ -1368,13 +1455,23 @@ function Install-Dlss5 {
 
     # 1. ReShade proxy (adaptacao automatica por API)
     $dxgiSrc = Join-Path (Get-DLSS5PayloadDirectory) $proxyDll
-    if (Test-Path -LiteralPath $dxgiSrc) {
-        Safe-Copy -Src $dxgiSrc -DstName "dxgi.dll"
+    if ($api -eq "VULKAN") {
+        # Vulkan nao passa por dxgi.dll: instala o ReShade como camada Vulkan (instalador oficial, silencioso)
+        if ($ProgressCallback) { &$ProgressCallback 58 "Registrando camada Vulkan do ReShade para $($target.ExeName)..." }
+        [void](Install-ReShadeVulkanLayer -TargetExe $target.Executable)
+        $state.VulkanLayer = $true
+    }
+    elseif (Test-Path -LiteralPath $dxgiSrc) {
+        # Um unico proxy ReShade por API: dois proxies no mesmo processo carregam o ReShade duas vezes e o segundo
+        # esconde o dxgi.dll real, derrubando o dispositivo D3D12 privado do Feeder (DXGI_ERROR_UNSUPPORTED).
         if ($api -eq "D3D9") {
             Safe-Copy -Src $dxgiSrc -DstName "d3d9.dll"
         }
-        if ($api -eq "OPENGL") {
+        elseif ($api -eq "OPENGL") {
             Safe-Copy -Src $dxgiSrc -DstName "opengl32.dll"
+        }
+        else {
+            Safe-Copy -Src $dxgiSrc -DstName "dxgi.dll"
         }
     }
 
@@ -1594,6 +1691,7 @@ function Uninstall-Dlss5 {
     $d = Get-Dict -Lang $script:CurrentLang
 
     Write-Status -Message "Restaurando jogo para o estado original de fabrica em: $targetFolder" -Level "INFO"
+    Remove-ReShadeVulkanApp -TargetExe $target.Executable
 
     $savedBacked = @()
     $savedInjected = @()
@@ -1718,7 +1816,17 @@ function Start-GameExecutable {
             $env:VK_LAYER_PATH = $folder
             $env:VK_INSTANCE_LAYERS = "VK_LAYER_feed_vk"
         }
-        Start-Process -FilePath $ExecutablePath -WorkingDirectory $folder
+        # Jogos Steam com DRM (ex: DOOM) ignoram o exe chamado diretamente: o steam_api relanca o jogo pelo Steam com a
+        # opcao de inicializacao padrao. Por isso jogos Steam sao iniciados pelo proprio Steam (steam://rungameid/<AppID>).
+        # Se o jogo tem varias opcoes (OpenGL/Vulkan, DX11/DX12), o Steam mostra o seletor - escolha a API detectada.
+        $appId = Get-SteamAppIdForFolder -GameFolder $folder
+        if ($appId) {
+            Write-Status -Message "Jogo Steam (AppID $appId): iniciando via Steam. Se aparecer o seletor de API, escolha $(Split-Path -Leaf $ExecutablePath)." -Level "INFO"
+            Start-Process "steam://rungameid/$appId"
+        }
+        else {
+            Start-Process -FilePath $ExecutablePath -WorkingDirectory $folder
+        }
     }
     finally {
         $env:VK_LAYER_PATH = $oldVkPath
