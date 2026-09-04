@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     1 Click DLSS 5 v2.6.0-release — Universal Neural Control Center
     Auto-Descoberta Instantânea de Jogos (Steam, Epic, GOG, Xbox, EA), Motor de Resolução em 1 Clique (Auto-Fix),
@@ -600,20 +600,25 @@ function Detect-GameUpscalerType {
         $modMode = "FEEDER"
     }
 
-    # 2. Verifica se h  arquivo de estado
+        # 2. Verifica se ha arquivo de estado
     $stateFiles = @("_dlss5_install_state.json", "_1click_dlss5_state.json", "_dlss5_easy_installer_state.json")
     foreach ($sf in $stateFiles) {
         $sp = Join-Path $GameFolder $sf
         if (Test-Path -LiteralPath $sp -PathType Leaf) {
             try {
                 $saved = Get-Content -LiteralPath $sp -Raw -Encoding UTF8 | ConvertFrom-Json
-                if ($saved.UpscalerType) { return $saved.UpscalerType }
+                if ($saved.UpscalerType) {
+                    if ($saved.Mode -eq "FEEDER" -and $saved.UpscalerType -eq "NATIVE_DLSS") {
+                        return "UNIVERSAL_FEEDER"
+                    }
+                    return $saved.UpscalerType
+                }
             }
             catch {}
         }
     }
 
-    # Se for um jogo que j  tem o mod instalado e n o tem state file, retornar o modo detectado dos bin rios
+    # Se for um jogo que ja tem o mod instalado e nao tem state file, retornar o modo detectado dos binarios
     if ($isModded) {
         if ($modMode -eq "DIRECT") { return "NATIVE_DLSS" }
         if ($modMode -eq "OPTISCALER") { return "FSR2_BRIDGE" }
@@ -621,8 +626,47 @@ function Detect-GameUpscalerType {
     }
 
     # 3. Verifica upscaler nativo do jogo (sem mod)
+    # Streamline oficial ou bibliotecas DLSS 3+ indicam DLSS nativo incondicional
     foreach ($f in $allFiles) {
-        if ($f -match '^(nvngx_dlss\.dll|nvngx_dlssd\.dll|nvngx_dlssg\.dll|sl\.dlss\.dll)$') {
+        if ($f -match '^(nvngx_dlssd\.dll|nvngx_dlssg\.dll|sl\.dlss\.dll|sl\.interposer\.dll)$') {
+            return "NATIVE_DLSS"
+        }
+    }
+
+    # Se apenas nvngx_dlss.dll estiver presente:
+    # Validar se nao se trata de residuo do payload (58956400 bytes) injetado em jogo sem suporte nativo
+    if ($allFiles.Contains("nvngx_dlss.dll")) {
+        $isOrphanPayload = $false
+        foreach ($fPath in $folders) {
+            $dlssCheck = Join-Path $fPath "nvngx_dlss.dll"
+            if (Test-Path -LiteralPath $dlssCheck -PathType Leaf) {
+                $len = (Get-Item -LiteralPath $dlssCheck).Length
+                if ($len -eq 58956400) {
+                    $hasDlssInExe = $false
+                    $exes = @(Get-ChildItem -LiteralPath $fPath -Filter "*.exe" -File -ErrorAction SilentlyContinue)
+                    foreach ($exe in $exes) {
+                        try {
+                            $stream = [System.IO.File]::OpenRead($exe.FullName)
+                            $reader = New-Object System.IO.BinaryReader($stream)
+                            $readLen = [Math]::Min(50MB, $stream.Length)
+                            $exeBytes = $reader.ReadBytes($readLen)
+                            $reader.Close()
+                            $stream.Close()
+                            $exeAscii = [System.Text.Encoding]::ASCII.GetString($exeBytes).ToLower()
+                            if ($exeAscii -match 'nvngx' -or $exeAscii -match 'sl\.dlss') {
+                                $hasDlssInExe = $true
+                                break
+                            }
+                        } catch {}
+                    }
+                    if (-not $hasDlssInExe) {
+                        $isOrphanPayload = $true
+                    }
+                }
+                break
+            }
+        }
+        if (-not $isOrphanPayload) {
             return "NATIVE_DLSS"
         }
     }
@@ -930,7 +974,7 @@ function Show-InstallationSuccessDialog {
 
     $instText = if ($isPt) { "No menu do jogo: Deixe o upscaler desligado. O DLSS 5 rodara na resolucao nativa com qualidade neural maxima!" } else { "In game settings: Keep upscaler disabled. DLSS 5 will run at 100% native resolution with maximum neural clarity!" }
     if ($ModeName -match 'DIRECT|Modo 1|Mode 1') {
-        $instText = if ($isPt) { "No menu de video do jogo: ATIVE o DLSS (Qualidade ou Desempenho). Pressione [Home] para abrir o painel neural." } else { "In game video settings: ENABLE DLSS (Quality or Performance). Press [Home] in-game for the neural overlay." }
+        $instText = if ($isPt) { "No menu de video do jogo: ATIVE o DLSS (Qualidade, Desempenho ou DLAA). O DLSS 5 opera na aba 'RenoDX-DLSSNR' do ReShade [Home] substituindo a IA nativa (sem necessidade de ativar shaders na aba Inicio)." } else { "In game video settings: ENABLE DLSS (Quality, Performance, or DLAA). DLSS 5 operates via the 'RenoDX-DLSSNR' tab in ReShade [Home], replacing the native AI (no shaders required on Home tab)." }
     }
     elseif ($ModeName -match 'OPTISCALER|Modo 2|Mode 2') {
         $instText = if ($isPt) { "No menu de video do jogo: ATIVE o FSR 2 ou XeSS (Qualidade). O OptiScaler redirecionara para a IA DLSS 5." } else { "In game video settings: ENABLE FSR 2 or XeSS (Quality). OptiScaler will redirect the pipeline to DLSS 5." }
@@ -1867,12 +1911,15 @@ function Install-Dlss5 {
         if (Test-Path -LiteralPath $nrSrc) {
             Safe-Copy -Src $nrSrc -DstName "nvngx_dlssnr.dll"
         }
-        # Preserva nvngx_dlss.dll original do jogo caso ja exista (evita falha de integridade em launchers como RDR2)
-        $dlssTarget = Join-Path $targetFolder "nvngx_dlss.dll"
-        if (-not (Test-Path -LiteralPath $dlssTarget -PathType Leaf)) {
-            $dlssSrc = Join-Path (Get-DLSS5PayloadDirectory) "nvngx_dlss.dll"
-            if (Test-Path -LiteralPath $dlssSrc) {
-                Safe-Copy -Src $dlssSrc -DstName "nvngx_dlss.dll"
+        # Injeta nvngx_dlss.dll SOMENTE no Modo DIRECT em jogos que realmente possuem DLSS nativo!
+        # NUNCA injetar em jogos FEEDER (Modo 3) ou OPTISCALER (Modo 2) para evitar falsa deteccao e poluicao de arquivos.
+        if ($effectiveMode -eq "DIRECT" -and $detectedUpscaler -eq "NATIVE_DLSS") {
+            $dlssTarget = Join-Path $targetFolder "nvngx_dlss.dll"
+            if (-not (Test-Path -LiteralPath $dlssTarget -PathType Leaf)) {
+                $dlssSrc = Join-Path (Get-DLSS5PayloadDirectory) "nvngx_dlss.dll"
+                if (Test-Path -LiteralPath $dlssSrc) {
+                    Safe-Copy -Src $dlssSrc -DstName "nvngx_dlss.dll"
+                }
             }
         }
     }
@@ -1936,10 +1983,25 @@ function Install-Dlss5 {
         # Registra preferencia de GPU de Alto Desempenho (dGPU) para evitar selecao erronea de iGPU em CPUs hibridas (ex: Ryzen 9000/7000)
         Set-GameHighPerformanceGpuPreference -ExecutablePath $target.Executable
 
-        # Shaders e Texturas opcionais para ReShade (CAS, Vibrance, Tonemap, SMAA, FXAA)
+        # Shaders e Texturas opcionais para ReShade no Modo DIRECT (apenas pos-processamento leve: CAS, Vibrance, Tonemap, SMAA, FXAA, Splitscreen)
+        # NUNCA copiar shaders de Feeder (lumenite_*.fx, DLSS5_Feed.fx) para o Modo 1 para evitar recompilacao pesada e perda de FPS!
         $shaderDir = Join-Path $targetFolder "reshade-shaders\Shaders"
         [void](New-Item -ItemType Directory -Path $shaderDir -Force)
-        Get-ChildItem -LiteralPath (Join-Path $feederPayload "shaders") | Copy-Item -Destination $shaderDir -Recurse -Force
+        $mode1Shaders = @("CAS.fx", "Tonemap.fx", "Vibrance.fx", "SMAA.fx", "FXAA.fx", "Splitscreen.fx", "ReShade.fxh", "ReShadeUI.fxh", "SMAA.fxh", "FXAA.fxh", "DrawText.fxh")
+        $feederShadersSrc = Join-Path $feederPayload "shaders"
+        foreach ($sf in $mode1Shaders) {
+            $sp = Join-Path $feederShadersSrc $sf
+            if (Test-Path -LiteralPath $sp -PathType Leaf) {
+                Copy-Item -LiteralPath $sp -Destination (Join-Path $shaderDir $sf) -Force
+            }
+        }
+        $incSrc = Join-Path $feederShadersSrc "include"
+        if (Test-Path -LiteralPath $incSrc -PathType Container) {
+            Copy-Item -LiteralPath $incSrc -Destination (Join-Path $shaderDir "include") -Recurse -Force
+        }
+        # Remove eventuais shaders de Feeder residuais caso tenha havido troca de modo
+        Get-ChildItem -LiteralPath $shaderDir -Filter "lumenite_*.fx" -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+        Get-ChildItem -LiteralPath $shaderDir -Filter "DLSS5_Feed.fx" -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
         
         $texPayload = Join-Path $feederPayload "textures"
         if (Test-Path -LiteralPath $texPayload -PathType Container) {
@@ -2211,7 +2273,37 @@ function Uninstall-Dlss5 {
     $finalPurge = @($purgeList | Where-Object {
         $fn = $_.ToLower()
         if ($fn -match '^(libxess.*\.dll|.*xess.*\.dll|.*xell.*\.dll)$') { return $false }
-        if ($fn -match '^nvngx_dlss(?!nr).*') { return $false } # Preserva nvngx_dlss.dll, dlssd, dlssg, deepdvc
+        if ($fn -eq 'nvngx_dlss.dll') {
+            # Se nvngx_dlss.dll foi injetado pelo DLSS 5 e o jogo nao e nativo de DLSS (ex: Mafia), purgar!
+            $pPath = Join-Path $targetFolder $fn
+            if (Test-Path -LiteralPath $pPath -PathType Leaf) {
+                $pLen = (Get-Item -LiteralPath $pPath).Length
+                if ($pLen -eq 58956400 -or ($savedInjected -contains $fn)) {
+                    $hasNative = $false
+                    $exes = @(Get-ChildItem -LiteralPath $targetFolder -Filter "*.exe" -File -ErrorAction SilentlyContinue)
+                    foreach ($exe in $exes) {
+                        try {
+                            $stream = [System.IO.File]::OpenRead($exe.FullName)
+                            $reader = New-Object System.IO.BinaryReader($stream)
+                            $readLen = [Math]::Min(50MB, $stream.Length)
+                            $exeBytes = $reader.ReadBytes($readLen)
+                            $reader.Close()
+                            $stream.Close()
+                            $exeAscii = [System.Text.Encoding]::ASCII.GetString($exeBytes).ToLower()
+                            if ($exeAscii -match 'nvngx' -or $exeAscii -match 'sl\.dlss') {
+                                $hasNative = $true
+                                break
+                            }
+                        } catch {}
+                    }
+                    if (-not $hasNative) {
+                        return $true
+                    }
+                }
+            }
+            return $false
+        }
+        if ($fn -match '^nvngx_dlss(?!nr).*') { return $false } # Preserva dlssd, dlssg, deepdvc
         if ($fn -match '^sl\.(?!dlss_nr).*') { return $false } # Preserva sl.interposer, sl.common, sl.dlss etc.
         if ($fn -match '^(amd_.*|ffx_.*|dxcompiler\.dll|d3d12core\.dll|bink2.*|steam_api.*|onlinefix.*|xgameruntime.*)$') { return $false }
         return $true
@@ -2267,6 +2359,38 @@ function Uninstall-Dlss5 {
     if (Test-Path -LiteralPath $staleSlNr -PathType Leaf) {
         Remove-Item -LiteralPath $staleSlNr -Force -ErrorAction SilentlyContinue
         Write-Status -Message "[PURGA] sl.dlss_nr.dll removido com sucesso." -Level "OK"
+    }
+
+    # Higienizacao complementar de nvngx_dlss.dll orfao injetado em jogo sem DLSS nativo
+    $orphanDlss = Join-Path $targetFolder "nvngx_dlss.dll"
+    if (Test-Path -LiteralPath $orphanDlss -PathType Leaf) {
+        $isBacked = ($savedBacked -contains "nvngx_dlss.dll")
+        if (-not $isBacked) {
+            $oLen = (Get-Item -LiteralPath $orphanDlss).Length
+            if ($oLen -eq 58956400) {
+                $hasNative = $false
+                $exes = @(Get-ChildItem -LiteralPath $targetFolder -Filter "*.exe" -File -ErrorAction SilentlyContinue)
+                foreach ($exe in $exes) {
+                    try {
+                        $stream = [System.IO.File]::OpenRead($exe.FullName)
+                        $reader = New-Object System.IO.BinaryReader($stream)
+                        $readLen = [Math]::Min(50MB, $stream.Length)
+                        $exeBytes = $reader.ReadBytes($readLen)
+                        $reader.Close()
+                        $stream.Close()
+                        $exeAscii = [System.Text.Encoding]::ASCII.GetString($exeBytes).ToLower()
+                        if ($exeAscii -match 'nvngx' -or $exeAscii -match 'sl\.dlss') {
+                            $hasNative = $true
+                            break
+                        }
+                    } catch {}
+                }
+                if (-not $hasNative) {
+                    Remove-Item -LiteralPath $orphanDlss -Force -ErrorAction SilentlyContinue
+                    Write-Status -Message "[PURGA] nvngx_dlss.dll orfao do payload removido com sucesso de '$targetFolder'." -Level "OK"
+                }
+            }
+        }
     }
 
     # Purga ReShade.ini / ReShadePreset.ini se foram gerados pelo DLSS 5
