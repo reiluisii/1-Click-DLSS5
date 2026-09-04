@@ -2,6 +2,23 @@
 
 All notable changes, architectural overhauls, and bug fixes for the **1 Click DLSS 5** project are documented in this file.
 
+## [Unreleased] - english-default fork - 2026-09-04
+
+### English by default
+- English is now the startup language; the fallback dictionary in `Get-Dict` is English and mirrors `translations.json`. Portuguese and the other 8 languages remain available from the dropdown (English listed first).
+- Translated every hard-coded Portuguese string in `core/1-Click-DLSS5.ps1`: main window, status bar, progress steps, success/diagnostics/error dialogs, message boxes, folder browser, and all `Write-Status` log lines. Regexes that matched Portuguese text (`Modo 1`, `Nenhum executavel`, `Acesso negado`, ...) updated to the new messages.
+- `src/Launcher.cs` dialog strings translated (executable not rebuilt).
+
+### GUI fixes
+- Repaired encoding damage where accented characters and emoji had been replaced by spaces (`[ ] INICIAR JOGO`, `DIRET RIO`, missing step arrows).
+- Removed colour emoji from all languages in `translations.json`; WinForms/GDI renders them as boxes and they overflowed buttons. Replaced with ASCII markers.
+- Enabled DPI auto-scaling (`AutoScaleMode = Dpi`) so controls grow with 125%/150% display scaling instead of clipping text.
+- Widened the diagnosis button, shortened the auto-mode notice, and applied the language dictionary once at startup so every control comes from one source.
+
+### Tooling and documentation
+- `tools/Verify-Payload.ps1` + `tools/payload-manifest.json`: re-runs the SHA-256 and Authenticode checks from the security review against your local copy.
+- `docs/FORK-NOTES.md`: full change log, fork/rebase instructions, and the complete security review of the v2.6.0 package.
+
 ## [v2.6.0-release] - 2026-09-03
 
 ### 🛡️ Vigilant Game Integrity Engine & Universal Runtime Auto-Healing
