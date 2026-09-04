@@ -58,6 +58,12 @@ $script:Translations = $null
 if (Test-Path -LiteralPath $script:TranslationsPath -PathType Leaf) {
     try {
         $jsonRaw = [System.IO.File]::ReadAllText($script:TranslationsPath, [System.Text.Encoding]::UTF8)
+        # Emojis (U+1F000..U+1FAFF, teclas 1/2/3 com U+20E3, raio U+26A1) viram quadrados no WinForms/GDI.
+        # Trocamos por marcadores ASCII para a UI ficar legivel em qualquer fonte.
+        $jsonRaw = [regex]::Replace($jsonRaw, '\uFE0F', '')
+        $jsonRaw = [regex]::Replace($jsonRaw, '([0-9])\u20E3', '$1.')
+        $jsonRaw = [regex]::Replace($jsonRaw, '\u26A1|\u2B50|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|\uD83E[\uDC00-\uDFFF]', '')
+        $jsonRaw = [regex]::Replace($jsonRaw, '\[\s*\]\s*', '')
         $script:Translations = $jsonRaw | ConvertFrom-Json
     }
     catch {}
@@ -2414,7 +2420,7 @@ $actionPanel.Anchor = "Top, Bottom, Left, Right"
 [void]$rightPanel.Controls.Add($actionPanel)
 
 $btnInstall = New-Object System.Windows.Forms.Button
-$btnInstall.Text = "[ ] 1-CLIQUE: INSTALAR DLSS 5"
+$btnInstall.Text = "1-CLIQUE: INSTALAR DLSS 5"
 $btnInstall.Location = New-Object System.Drawing.Point(0, 5)
 $btnInstall.Size = New-Object System.Drawing.Size(355, 48)
 $btnInstall.Font = New-Object System.Drawing.Font("Segoe UI Bold", 11.5)
@@ -2422,7 +2428,7 @@ Style-Button -Button $btnInstall -BaseColor ([System.Drawing.Color]::FromArgb(11
 [void]$actionPanel.Controls.Add($btnInstall)
 
 $btnLaunch = New-Object System.Windows.Forms.Button
-$btnLaunch.Text = "[ ] INICIAR JOGO"
+$btnLaunch.Text = "INICIAR JOGO"
 $btnLaunch.Location = New-Object System.Drawing.Point(367, 5)
 $btnLaunch.Size = New-Object System.Drawing.Size(355, 48)
 $btnLaunch.Font = New-Object System.Drawing.Font("Segoe UI Bold", 11.5)
@@ -2430,7 +2436,7 @@ Style-Button -Button $btnLaunch -BaseColor ([System.Drawing.Color]::FromArgb(0, 
 [void]$actionPanel.Controls.Add($btnLaunch)
 
 $btnUninstall = New-Object System.Windows.Forms.Button
-$btnUninstall.Text = "[ ] RESTAURAR ORIGINAL"
+$btnUninstall.Text = "RESTAURAR ORIGINAL"
 $btnUninstall.Location = New-Object System.Drawing.Point(0, 62)
 $btnUninstall.Size = New-Object System.Drawing.Size(355, 38)
 Style-Button -Button $btnUninstall -BaseColor ([System.Drawing.Color]::FromArgb(170, 45, 45)) -HoverColor ([System.Drawing.Color]::FromArgb(205, 55, 55)) -TextColor ([System.Drawing.Color]::White)
@@ -2572,7 +2578,7 @@ function Update-UiLanguage {
     $btnOpenLog.Text = $d.BtnOpenLog
 
     $btnInstallText = $d.BtnInstall
-    if ([string]::IsNullOrWhiteSpace($btnInstallText)) { $btnInstallText = "[⚡] 1-CLIQUE: INSTALAR DLSS 5" }
+    if ([string]::IsNullOrWhiteSpace($btnInstallText)) { $btnInstallText = "[>] 1-CLIQUE: INSTALAR DLSS 5" }
     $btnInstall.Text = $btnInstallText
 
     $gameList.Columns[0].Text = $d.ColGame
@@ -2594,6 +2600,16 @@ $comboLang.Add_SelectedIndexChanged({
             Update-UiLanguage -Lang $langCodes[$idx]
         }
     })
+
+# --- IDIOMA INICIAL = IDIOMA DO WINDOWS (o usuario pode trocar no seletor) ---
+try {
+    $sysLang = (Get-UICulture).TwoLetterISOLanguageName.ToLower()
+    $langMap = @{ "pt" = 0; "en" = 1; "es" = 2; "de" = 3; "fr" = 4; "it" = 5; "ja" = 6; "zh" = 7; "ru" = 8; "ko" = 9 }
+    $sysIdx = 1
+    if ($langMap.ContainsKey($sysLang)) { $sysIdx = $langMap[$sysLang] }
+    if ($comboLang.SelectedIndex -ne $sysIdx) { $comboLang.SelectedIndex = $sysIdx }
+}
+catch {}
 
 # --- EVENTOS E LOGICA DE INSPEC AO ---
 function Select-GameInInspector {
@@ -2644,7 +2660,7 @@ function Select-GameInInspector {
         $lblGameStatus.ForeColor = [System.Drawing.Color]::FromArgb(255, 205, 90)
         
         $btnText = $d.BtnReinstall
-        if ([string]::IsNullOrWhiteSpace($btnText)) { $btnText = "[⚡] REINSTALAR / ATUALIZAR DLSS 5" }
+        if ([string]::IsNullOrWhiteSpace($btnText)) { $btnText = "[>] REINSTALAR / ATUALIZAR DLSS 5" }
         $btnInstall.Text = $btnText
         Style-Button -Button $btnInstall -BaseColor ([System.Drawing.Color]::FromArgb(65, 140, 45)) -HoverColor ([System.Drawing.Color]::FromArgb(85, 175, 55)) -TextColor ([System.Drawing.Color]::White)
     }
@@ -2653,7 +2669,7 @@ function Select-GameInInspector {
         $lblGameStatus.ForeColor = [System.Drawing.Color]::FromArgb(118, 225, 125)
         
         $btnText = $d.BtnInstall
-        if ([string]::IsNullOrWhiteSpace($btnText)) { $btnText = "[⚡] 1-CLIQUE: INSTALAR DLSS 5" }
+        if ([string]::IsNullOrWhiteSpace($btnText)) { $btnText = "[>] 1-CLIQUE: INSTALAR DLSS 5" }
         $btnInstall.Text = $btnText
         Style-Button -Button $btnInstall -BaseColor ([System.Drawing.Color]::FromArgb(118, 185, 0)) -HoverColor ([System.Drawing.Color]::FromArgb(140, 220, 0)) -TextColor ([System.Drawing.Color]::Black)
     }
