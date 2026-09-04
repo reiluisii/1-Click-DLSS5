@@ -221,11 +221,25 @@ function Resolve-GameTarget {
     $exePath = $null
 
     $allExes = @(Get-ChildItem -LiteralPath $folder -Filter "*.exe" -File -Recurse -Depth 4 -ErrorAction SilentlyContinue)
-    $ignoredPattern = '^(crashreport|crashhandler|unitycrashhandler|unins.*|setup|config|launcher|easyanticheat|battleye|epicgameslauncher|redist|vcredist|dxsetup|quickstart|webinstaller|support|console.*|banana.*)$'
+    # Pastas que nunca contem o executavel do jogo (redistribuiveis, instaladores, ferramentas, backups)
+    $ignoredDirPattern = '\\(redistributables?|_commonredist|commonredist|redist|installers?|support|tools?|launcher|dotnet|directx|vcredist|__installer|_dlss5_backup|_backup[^\\]*|engine\\binaries)(\\|$)'
+    # Nomes que denunciam instaladores, lancadores, crash handlers e utilitarios (busca por substring)
+    $ignoredPattern = '(crashreport|crashhandler|crashpad|unitycrashhandler|unins|setup|install|config|launcher|easyanticheat|eac_|battleye|epicgameslauncher|redist|dxsetup|quickstart|webinstaller|support|console|banana|social-club|socialclub|rockstar|updater|report|activation|benchmark|dedicatedserver|helper|cleanup|touchup|bootstrap)'
     $filtered = @($allExes | Where-Object {
             $baseName = $_.BaseName.ToLower()
-            -not ($baseName -match $ignoredPattern)
+            $dirName = $_.Directory.FullName.ToLower()
+            -not ($baseName -match $ignoredPattern) -and -not ($dirName -match $ignoredDirPattern)
         })
+    # Se o filtro removeu tudo (nome de jogo exotico), volta a lista completa, mas ainda sem pastas de redistribuiveis
+    if ($filtered.Count -eq 0) {
+        $filtered = @($allExes | Where-Object { -not ($_.Directory.FullName.ToLower() -match $ignoredDirPattern) })
+    }
+    if ($filtered.Count -eq 0) { $filtered = $allExes }
+    # Lancadores-stub (PlayGTAIV.exe, *Launcher.exe pequenos) tem poucos KB; se existe um executavel grande, ignora os minusculos
+    $bigOnes = @($filtered | Where-Object { $_.Length -ge 5MB })
+    if ($bigOnes.Count -gt 0) {
+        $filtered = @($filtered | Where-Object { $_.Length -ge 1MB })
+    }
 
     # Se o usu rio apontou diretamente para um execut vel espec fico
     if (-not $targetItem.PSIsContainer -and $targetItem.Extension -ieq ".exe") {
@@ -299,6 +313,67 @@ function Resolve-GameTarget {
     }
 }
 
+
+# --- LEITOR DA TABELA DE IMPORTACAO PE (PE32 / PE32+) ---
+try {
+    if (-not ([System.Management.Automation.PSTypeName]'DLSS5PeImports').Type) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.IO;
+using System.Text;
+using System.Collections.Generic;
+public static class DLSS5PeImports {
+    public static string[] GetImportedDlls(string path) {
+        var result = new List<string>();
+        byte[] b = File.ReadAllBytes(path);
+        if (b.Length < 0x40 || b[0] != 'M' || b[1] != 'Z') return result.ToArray();
+        int pe = BitConverter.ToInt32(b, 0x3C);
+        if (pe <= 0 || pe + 0x18 > b.Length || b[pe] != 'P' || b[pe+1] != 'E') return result.ToArray();
+        int coff = pe + 4;
+        int numSections = BitConverter.ToUInt16(b, coff + 2);
+        int optSize = BitConverter.ToUInt16(b, coff + 16);
+        int opt = coff + 20;
+        ushort magic = BitConverter.ToUInt16(b, opt);
+        bool pe32plus = magic == 0x20B;
+        int ddOffset = opt + (pe32plus ? 112 : 96);
+        int importDirRva = BitConverter.ToInt32(b, ddOffset + 8);
+        if (importDirRva == 0) return result.ToArray();
+        int sect = opt + optSize;
+        var sections = new List<int[]>();
+        for (int i = 0; i < numSections; i++) {
+            int s = sect + i * 40;
+            if (s + 40 > b.Length) break;
+            int va = BitConverter.ToInt32(b, s + 12);
+            int vsz = BitConverter.ToInt32(b, s + 8);
+            int raw = BitConverter.ToInt32(b, s + 20);
+            int rawSz = BitConverter.ToInt32(b, s + 16);
+            sections.Add(new int[] { va, Math.Max(vsz, rawSz), raw });
+        }
+        Func<int, int> rvaToOff = (rva) => {
+            foreach (var s in sections) if (rva >= s[0] && rva < s[0] + s[1]) return rva - s[0] + s[2];
+            return -1;
+        };
+        int desc = rvaToOff(importDirRva);
+        if (desc < 0) return result.ToArray();
+        for (int i = 0; i < 4096; i++) {
+            int d = desc + i * 20;
+            if (d + 20 > b.Length) break;
+            int nameRva = BitConverter.ToInt32(b, d + 12);
+            if (nameRva == 0) break;
+            int nameOff = rvaToOff(nameRva);
+            if (nameOff < 0 || nameOff >= b.Length) continue;
+            int end = nameOff;
+            while (end < b.Length && b[end] != 0 && end - nameOff < 256) end++;
+            result.Add(Encoding.ASCII.GetString(b, nameOff, end - nameOff));
+        }
+        return result.ToArray();
+    }
+}
+"@
+    }
+}
+catch {}
+
 function Detect-GameGraphicsApi {
     param(
         [Parameter(Mandatory = $true)][string]$TargetExe,
@@ -309,21 +384,44 @@ function Detect-GameGraphicsApi {
     }
 
     # 1. Inspe  o direta do PE Import Table do execut vel alvo (IAT Determin stico)
+    # 1. Tabela de importacao real do PE (IAT) - le os nomes das DLLs que o executavel importa de fato
     if (Test-Path -LiteralPath $TargetExe -PathType Leaf) {
-        try {
-            $fs = [System.IO.File]::OpenRead($TargetExe)
-            $len = [Math]::Min($fs.Length, 4194304)
-            $bytes = New-Object byte[] $len
-            [void]$fs.Read($bytes, 0, $len)
-            $fs.Close()
-            $str = [System.Text.Encoding]::ASCII.GetString($bytes)
-            if ($str -match '(?i)\bd3d12\.dll\b') { return "D3D12" }
-            if ($str -match '(?i)\bvulkan-1\.dll\b') { return "VULKAN" }
-            if ($str -match '(?i)\bd3d11\.dll\b') { return "DXGI" }
-            if ($str -match '(?i)\bd3d9\.dll\b') { return "D3D9" }
-            if ($str -match '(?i)\bopengl32\.dll\b') { return "OPENGL" }
+        $exeNameLow = (Split-Path -Leaf $TargetExe).ToLower()
+        # Sufixo no nome do exe e a evidencia mais forte e nao depende de importacao estatica
+        # (Control_DX12.exe, RDR2 vulkan/dx12, DOOMx64vk.exe carregam a API dinamicamente)
+        if ($exeNameLow -match '(^|[_\-. ])(vk|vulkan)([_\-. ]|\.exe$)') { return "VULKAN" }
+        if ($exeNameLow -match '(dx12|d3d12)') { return "D3D12" }
+        if ($exeNameLow -match '(dx11|d3d11)') { return "DXGI" }
+        if ($exeNameLow -match '(dx9|d3d9)')   { return "D3D9" }
+        if ($exeNameLow -match '(x64vk|64vk)') { return "VULKAN" }
+        $imports = @()
+        try { $imports = @([DLSS5PeImports]::GetImportedDlls($TargetExe) | ForEach-Object { $_.ToLower() }) } catch { $imports = @() }
+
+        $found = New-Object System.Collections.Generic.List[string]
+        if ($imports -contains "d3d12.dll")    { [void]$found.Add("D3D12") }
+        if ($imports -contains "vulkan-1.dll") { [void]$found.Add("VULKAN") }
+        if (($imports -contains "d3d11.dll") -or ($imports -contains "dxgi.dll")) { [void]$found.Add("DXGI") }
+        if ($imports -contains "d3d9.dll")     { [void]$found.Add("D3D9") }
+        if ($imports -contains "opengl32.dll") { [void]$found.Add("OPENGL") }
+
+        if ($found.Count -eq 0) {
+            # Sem importacao estatica (carregamento dinamico): procura os nomes no binario inteiro
+            try {
+                $str = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($TargetExe))
+                if ($str -match '(?i)\bd3d12\.dll\b')    { [void]$found.Add("D3D12") }
+                if ($str -match '(?i)\bvulkan-1\.dll\b') { [void]$found.Add("VULKAN") }
+                if ($str -match '(?i)\bd3d11\.dll\b')    { [void]$found.Add("DXGI") }
+                if ($str -match '(?i)\bd3d9\.dll\b')     { [void]$found.Add("D3D9") }
+                if ($str -match '(?i)\bopengl32\.dll\b') { [void]$found.Add("OPENGL") }
+            }
+            catch {}
         }
-        catch {}
+
+        if ($found.Count -gt 0) {
+            foreach ($api in @("D3D12", "VULKAN", "DXGI", "D3D9", "OPENGL")) {
+                if ($found.Contains($api)) { return $api }
+            }
+        }
     }
 
     # 2. Verifica  o de DLLs distribu das na pasta local do jogo
