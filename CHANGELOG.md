@@ -2,6 +2,13 @@
 
 All notable changes, architectural overhauls, and bug fixes for the **1 Click DLSS 5** project are documented in this file.
 
+## [v3.0.1-fix] - 2026-09-05
+
+### 🚑 Emergency Startup Fix (Windows PowerShell 5.1 & Encoding)
+- **Resolved First-Launch Crash on Windows 10/11:** Fixed a critical issue where the absence of a UTF-8 Byte Order Mark (BOM) in `.ps1` files caused Windows PowerShell 5.1 (the default built-in PowerShell on Windows) to parse localized Unicode strings as ANSI, resulting in cascading syntax and unexpected token errors upon launching `1-Click-DLSS5.exe`.
+- **Enforced Single UTF-8 BOM:** Normalized and sanitized all PowerShell scripts (`core/1-Click-DLSS5.ps1`, `core/engine/*.ps1`, `tools/*.ps1`) with an explicit UTF-8 BOM, guaranteeing flawless parsing across all Windows locales (English, Russian, Portuguese, German, French, Chinese, Japanese, etc.).
+- **Enhanced Launcher Detection:** Updated `1-Click-DLSS5.exe` with multi-path detection for modern PowerShell 7 (`pwsh.exe`) alongside built-in Windows PowerShell 5.1, plus UTF-8 error stream decoding.
+
 ## [v3.0.0] - 2026-09-05
 
 ### 🚀 Major Architectural Refactoring & Stability Overhaul

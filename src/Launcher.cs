@@ -12,8 +12,8 @@ using System.Windows.Forms;
 [assembly: AssemblyProduct("1 Click DLSS 5")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 MIT License")]
 [assembly: AssemblyTrademark("DLSS 5 Neural Control Center")]
-[assembly: AssemblyVersion("3.0.0.0")]
-[assembly: AssemblyFileVersion("3.0.0.0")]
+[assembly: AssemblyVersion("3.0.1.0")]
+[assembly: AssemblyFileVersion("3.0.1.0")]
 
 namespace OneClickDLSS5
 {
@@ -51,10 +51,19 @@ namespace OneClickDLSS5
 
             // Seleciona o interpretador PowerShell mais recente disponível
             string psExe = "powershell.exe";
-            string pwsh7 = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"PowerShell\7\pwsh.exe");
-            if (File.Exists(pwsh7))
+            string[] pwshCandidates = new string[]
             {
-                psExe = pwsh7;
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"PowerShell\7\pwsh.exe"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Microsoft\PowerShell\7\pwsh.exe"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), @"PowerShell\7\pwsh.exe")
+            };
+            foreach (string cand in pwshCandidates)
+            {
+                if (!string.IsNullOrEmpty(cand) && File.Exists(cand))
+                {
+                    psExe = cand;
+                    break;
+                }
             }
 
             try
@@ -67,6 +76,7 @@ namespace OneClickDLSS5
                 psi.CreateNoWindow = true;
                 psi.WindowStyle = ProcessWindowStyle.Normal;
                 psi.RedirectStandardError = true;
+                psi.StandardErrorEncoding = System.Text.Encoding.UTF8;
 
                 using (Process proc = Process.Start(psi))
                 {

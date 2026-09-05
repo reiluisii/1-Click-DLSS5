@@ -4,7 +4,7 @@
   "package": "1-Click-DLSS5-v2.6.0-release.zip",
   "files": {
     "1-Click-DLSS5.exe": {
-      "sha256": "9c76ed7c47859ae2ce01f61622ad10a3554e0a76ba6baa2d2eba58cfb2285ed4",
+      "sha256": "3656def9c1a5c0942745f7558da674102671909991d60b7611764cf61a2d2a85",
       "size": 39936,
       "expectedSigner": null,
       "signatureStatus": "NotSigned"

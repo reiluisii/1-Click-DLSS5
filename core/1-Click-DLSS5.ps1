@@ -1,6 +1,6 @@
-<#
+﻿<#
 .SYNOPSIS
-    1 Click DLSS 5 v3.0.0 — Universal Neural Control Center
+    1 Click DLSS 5 v3.0.1-fix — Universal Neural Control Center
     Auto-Descoberta Instantânea de Jogos (Steam, Epic, GOG, Xbox, EA), Motor de Resolução em 1 Clique (Auto-Fix),
     Suporte Universal a APIs (DirectX 9/10/11/12, Vulkan, OpenGL), 32 e 64-bit, 10 Idiomas Nativos.
 #>
@@ -84,7 +84,7 @@ function Apply-DpiScaling {
 
 
 # --- CONFIGURACOES GLOBAIS ---
-$script:Version = "3.0.0"
+$script:Version = "3.0.1-fix"
 $script:AddOnName = "renodx-dlss5.addon64"
 $script:StateName = "_dlss5_install_state.json"
 $script:BackupName = "_DLSS5_Backup"
@@ -238,7 +238,7 @@ function Write-Status {
 }
 
 function Get-FormattedTelemetryBanner {
-    param([string]$Version = "3.0.0")
+    param([string]$Version = "3.0.1-fix")
     $sb = [System.Text.StringBuilder]::new()
     $ts = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss.fff")
     
@@ -1542,7 +1542,7 @@ $lblCard3Title.ForeColor = [System.Drawing.Color]::FromArgb(190, 150, 255)
 [void]$cardMode3.Controls.Add($lblCard3Title)
 
 $lblCard3Desc = New-Object System.Windows.Forms.Label
-$lblCard3Desc.Text = "Para QUALQUER jogo (Mafia, GTA, etc). Reconstru  o 100% limpa e sem perda de nitidez."
+$lblCard3Desc.Text = "Para QUALQUER jogo (Mafia, GTA, etc). Reconstrução 100% limpa e sem perda de nitidez."
 $lblCard3Desc.Location = New-Object System.Drawing.Point(12, 26)
 $lblCard3Desc.Size = New-Object System.Drawing.Size(690, 20)
 $lblCard3Desc.ForeColor = [System.Drawing.Color]::FromArgb(170, 195, 220)
@@ -1564,7 +1564,7 @@ function Highlight-SelectedModeCard {
     if ($Mode -eq "DIRECT") {
         $cardMode1.BackColor = [System.Drawing.Color]::FromArgb(20, 48, 30)
         if ($isRdr2) {
-            $lblReqText.Text = if ($script:CurrentLang -eq "PT") { "No RDR2: Mude API para DirectX 12 (Configura  es > Gr ficos > Avan ado) e ATIVE o DLSS." } else { "In RDR2: Switch Graphics API to DirectX 12 (Settings > Graphics > Advanced) & ENABLE DLSS." }
+            $lblReqText.Text = if ($script:CurrentLang -eq "PT") { "No RDR2: Mude API para DirectX 12 (Configurações > Gráficos > Avançado) e ATIVE o DLSS." } else { "In RDR2: Switch Graphics API to DirectX 12 (Settings > Graphics > Advanced) & ENABLE DLSS." }
         }
         else {
             $lblReqText.Text = $d.ReqMode1
@@ -1577,7 +1577,7 @@ function Highlight-SelectedModeCard {
     else {
         $cardMode3.BackColor = [System.Drawing.Color]::FromArgb(35, 25, 55)
         if ($isRdr2) {
-            $lblReqText.Text = if ($script:CurrentLang -eq "PT") { "No RDR2: O Feeder requer DirectX 12. Mude a API para DirectX 12 nas op  es do jogo." } else { "In RDR2: Feeder requires DirectX 12. Switch Graphics API to DirectX 12 in game settings." }
+            $lblReqText.Text = if ($script:CurrentLang -eq "PT") { "No RDR2: O Feeder requer DirectX 12. Mude a API para DirectX 12 nas opções do jogo." } else { "In RDR2: Feeder requires DirectX 12. Switch Graphics API to DirectX 12 in game settings." }
         }
         else {
             $lblReqText.Text = $d.ReqMode3
