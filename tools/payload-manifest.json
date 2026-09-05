@@ -1,0 +1,105 @@
+{
+  "_comment": "Expected state of every binary shipped in 1-Click-DLSS5 v2.6.0-release, recorded during the 2026-09-04 security review. Run tools\\Verify-Payload.ps1 to compare your copy against this.",
+  "reviewed": "2026-09-04",
+  "package": "1-Click-DLSS5-v2.6.0-release.zip",
+  "files": {
+    "1-Click-DLSS5.exe": {
+      "sha256": "35f5f24b79c9121de8323f30f8acca14757bbddd40c46011dbab3b12b79b17eb",
+      "size": 39936,
+      "expectedSigner": null,
+      "signatureStatus": "NotSigned"
+    },
+    "core/payload/ReShade_Setup_6.8.0_Addon.exe": {
+      "sha256": "afe4c8f13048306307983b8b3d41d5bf00a86820440b0e57dea10950e1176445",
+      "size": 4318424,
+      "expectedSigner": "ReShade",
+      "signatureStatus": "Valid"
+    },
+    "core/payload/dxgi.dll": {
+      "sha256": "0cee63f9c9f13f3ac909c5b4903f4dbb4b719a7ab3b4f13b0deaf83c814b94f7",
+      "size": 5592064,
+      "expectedSigner": null,
+      "signatureStatus": "NotSigned"
+    },
+    "core/payload/dxgi32.dll": {
+      "sha256": "da430e0a9c6eecefa0d1b27d05e16c426fb5d04e808b194d914eaac4b31bc0f8",
+      "size": 4398080,
+      "expectedSigner": null,
+      "signatureStatus": "NotSigned"
+    },
+    "core/payload/feeder/dlss5-feed.addon32": {
+      "sha256": "d2df9fbf9b5e0cc24291b9240e4f8dd2aae063592571bbed37302878b6dac74c",
+      "size": 141824,
+      "expectedSigner": null,
+      "signatureStatus": "NotSigned"
+    },
+    "core/payload/feeder/dlss5-feed.addon64": {
+      "sha256": "066eec8c797df2d656f2ab2324278921b1dd6e9116c9945294f4a00f7fec608a",
+      "size": 224256,
+      "expectedSigner": null,
+      "signatureStatus": "NotSigned"
+    },
+    "core/payload/feeder/host64/dlss5-feed-host64.exe": {
+      "sha256": "397dbf49c3a2b5f3bc13cfa0e0b3df4316edae9c45be7379bcacad066ebb07f2",
+      "size": 107008,
+      "expectedSigner": null,
+      "signatureStatus": "NotSigned"
+    },
+    "core/payload/feeder/layer-x64/VkLayer_feed_vk.dll": {
+      "sha256": "a1264d59c9ceff12aad4ea202fb71511092bbc0fd8f08decdd8e8e531378e744",
+      "size": 18944,
+      "expectedSigner": null,
+      "signatureStatus": "NotSigned"
+    },
+    "core/payload/feeder/layer-x86/VkLayer_feed_vk32.dll": {
+      "sha256": "c7d7f308887f528ead35a5fcd6a012a0ca39dc1f527dcb7259fca5b6cd424a61",
+      "size": 15872,
+      "expectedSigner": null,
+      "signatureStatus": "NotSigned"
+    },
+    "core/payload/nvngx_dlss.dll": {
+      "sha256": "c85f971ce023c9f3492fc7455f0b01a24ba18ea39636407a846902c4360b0b7e",
+      "size": 58956400,
+      "expectedSigner": "NVIDIA Corporation",
+      "signatureStatus": "Valid"
+    },
+    "core/payload/nvngx_dlssnr.dll": {
+      "sha256": "6eb209e764f39872625debd6abaf45e2bb6322f6f270f781f70c059ae30b3927",
+      "size": 165830144,
+      "expectedSigner": null,
+      "signatureStatus": "NotSigned",
+      "note": "Modified leaked NVIDIA build (310.8.SF.0). NVIDIA Authenticode signature stripped; PE checksum invalid. Cannot be verified."
+    },
+    "core/payload/optiscaler/OptiScaler.dll": {
+      "sha256": "fbfb6676b829dad7e020fb830586a16aa0ec6add78016db48ef12e2ae1803231",
+      "size": 25379632,
+      "expectedSigner": "SignPath Foundation",
+      "signatureStatus": "Valid"
+    },
+    "core/payload/optiscaler/libxess.dll": {
+      "sha256": "251659dd84a3e84de67c886a4186e01f3eca49b00641906fe38bb6b807e5d5b7",
+      "size": 77795704,
+      "expectedSigner": "Intel Corporation",
+      "signatureStatus": "Valid"
+    },
+    "core/payload/renodx-dlss5.addon64": {
+      "sha256": "d5adf82eb44b065f4c590ac91fe824bab07afea0eb9f994bde936710c8593952",
+      "size": 1732608,
+      "expectedSigner": null,
+      "signatureStatus": "NotSigned"
+    },
+    "core/payload/sl.dlss_nr.dll": {
+      "sha256": "9f6672e5e0170dc118a3188d21bda187e1fc1aa3502895b21ab846d23165c11d",
+      "size": 401024,
+      "expectedSigner": "NVIDIA Corporation",
+      "signatureStatus": "Valid"
+    },
+    "core/payload/streamline.zip": {
+      "sha256": "5078e587b1649a87ca39b6d1c48bae6f97f83824372504043de75291ac85af53",
+      "size": 154542896,
+      "expectedSigner": null,
+      "signatureStatus": "NotSigned",
+      "note": "Contains NVIDIA Streamline 2.13 DLLs (all validly signed by NVIDIA) plus a second copy of nvngx_dlssnr.dll whose signature digest does NOT match (patched after signing)."
+    }
+  }
+}

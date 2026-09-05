@@ -14,6 +14,68 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
+# --- FATOR DE ESCALA DPI + ESCALONAMENTO REAL DAS JANELAS (125% / 150% / 200%) ---
+try {
+    if (-not ([System.Management.Automation.PSTypeName]'DLSS5DpiQuery').Type) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class DLSS5DpiQuery {
+    [DllImport("user32.dll")] public static extern uint GetDpiForSystem();
+}
+"@
+    }
+    $script:DpiScale = [Math]::Round(([double][DLSS5DpiQuery]::GetDpiForSystem() / 96.0), 2)
+}
+catch { $script:DpiScale = 1.0 }
+if (-not $script:DpiScale -or $script:DpiScale -lt 1.0) { $script:DpiScale = 1.0 }
+
+function Scale-ControlTree {
+    param($Control, [double]$Factor, $ParentFont = $null)
+    if ($Control -is [System.Windows.Forms.ListView]) {
+        foreach ($col in $Control.Columns) { $col.Width = [int]($col.Width * $Factor) }
+        foreach ($il in @($Control.SmallImageList, $Control.LargeImageList)) {
+            if ($il -and $il.Tag -ne "dpi-scaled") {
+                $il.ImageSize = New-Object System.Drawing.Size([int]($il.ImageSize.Width * $Factor), [int]($il.ImageSize.Height * $Factor))
+                $il.Tag = "dpi-scaled"
+            }
+        }
+    }
+    if ($Control -is [System.Windows.Forms.PictureBox] -and $Control.Image -and $Control.SizeMode -eq [System.Windows.Forms.PictureBoxSizeMode]::Normal) {
+        $Control.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::Zoom
+    }
+    foreach ($child in $Control.Controls) {
+        Scale-ControlTree -Control $child -Factor $Factor -ParentFont $Control.Font
+    }
+}
+
+function Apply-DpiScaling {
+    param([System.Windows.Forms.Form]$Form)
+    $factor = $script:DpiScale
+    if (-not $Form -or $factor -le 1.0 -or $Form.Tag -eq "dpi-scaled") { return }
+    try {
+        $Form.SuspendLayout()
+        $Form.Scale((New-Object System.Drawing.SizeF([float]$factor, [float]$factor)))
+        Scale-ControlTree -Control $Form -Factor $factor -ParentFont $null
+        $wa = [System.Windows.Forms.Screen]::FromControl($Form).WorkingArea
+        if ($Form.Width -gt $wa.Width -or $Form.Height -gt $wa.Height) {
+            $newW = [Math]::Min($Form.Width, $wa.Width)
+            $newH = [Math]::Min($Form.Height, $wa.Height)
+            $Form.MinimumSize = New-Object System.Drawing.Size([Math]::Min($Form.MinimumSize.Width, $newW), [Math]::Min($Form.MinimumSize.Height, $newH))
+            $Form.Size = New-Object System.Drawing.Size($newW, $newH)
+        }
+        if ($Form.StartPosition -eq [System.Windows.Forms.FormStartPosition]::CenterScreen) {
+            $cx = [int]$wa.X + [int](([int]$wa.Width - [int]$Form.Width) / 2)
+            $cy = [int]$wa.Y + [int](([int]$wa.Height - [int]$Form.Height) / 2)
+            $Form.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
+            $Form.Location = New-Object System.Drawing.Point($cx, $cy)
+        }
+        $Form.Tag = "dpi-scaled"
+        $Form.ResumeLayout($true)
+    }
+    catch {}
+}
+
 # --- DPI SCALING SYSTEM-AWARE VIRTUALIZATION ---
 # Mantem a renderizacao sob DWM Virtualization proporcional do Windows (identica a v2.5.1),
 # impedindo que o WinForms aumente metricas de fontes isoladamente em 125%/150%/175% de escala,
@@ -48,6 +110,12 @@ $script:Translations = $null
 if (Test-Path -LiteralPath $script:TranslationsPath -PathType Leaf) {
     try {
         $jsonRaw = [System.IO.File]::ReadAllText($script:TranslationsPath, [System.Text.Encoding]::UTF8)
+                # Emojis (U+1F000..U+1FAFF, teclas 1/2/3 com U+20E3, raio U+26A1) viram quadrados no WinForms/GDI.
+        # Trocamos por marcadores ASCII para a UI ficar legivel em qualquer fonte.
+        $jsonRaw = [regex]::Replace($jsonRaw, '\uFE0F', '')
+        $jsonRaw = [regex]::Replace($jsonRaw, '([0-9])\u20E3', '$1.')
+        $jsonRaw = [regex]::Replace($jsonRaw, '\u26A1|\u2B50|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|\uD83E[\uDC00-\uDFFF]', '')
+        $jsonRaw = [regex]::Replace($jsonRaw, '\[\s*\]\s*', '')
         $script:Translations = $jsonRaw | ConvertFrom-Json
     }
     catch {}
@@ -316,6 +384,20 @@ function Get-Sha256 {
     return ( -join ($hashBytes | ForEach-Object { "{0:x2}" -f $_ }))
 }
 
+function Test-PayloadIdenticalFile {
+    # Verdadeiro se o arquivo na pasta do jogo e uma copia byte-a-byte do arquivo do nosso payload
+    # (ou seja: foi injetado por este programa e NAO e um runtime nativo do jogo).
+    param([string]$GameFile, [string]$PayloadName)
+    try {
+        if (-not (Test-Path -LiteralPath $GameFile -PathType Leaf)) { return $false }
+        $payload = Join-Path (Get-DLSS5PayloadDirectory) $PayloadName
+        if (-not (Test-Path -LiteralPath $payload -PathType Leaf)) { return $false }
+        if ((Get-Item -LiteralPath $GameFile).Length -ne (Get-Item -LiteralPath $payload).Length) { return $false }
+        return ((Get-Sha256 -Path $GameFile) -eq (Get-Sha256 -Path $payload))
+    }
+    catch { return $false }
+}
+
 function Get-PeArchitecture {
     param([Parameter(Mandatory = $true)][string]$Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return "UNKNOWN" }
@@ -341,6 +423,73 @@ function Get-PeArchitecture {
     catch {
         return "UNKNOWN"
     }
+}
+
+function Get-ReShadeAppsIniPath {
+    # ReShade 6.x mantem a camada Vulkan global em %ProgramData%\ReShade (registrada em HKLM)
+    return (Join-Path $env:ProgramData "ReShade\ReShadeApps.ini")
+}
+
+function Test-ReShadeVulkanLayerRegistered {
+    foreach ($k in @("HKLM:\SOFTWARE\Khronos\Vulkan\ImplicitLayers", "HKCU:\Software\Khronos\Vulkan\ImplicitLayers")) {
+        $v = Get-ItemProperty -Path $k -ErrorAction SilentlyContinue
+        if ($v -and (($v.PSObject.Properties | Where-Object { $_.Name -match 'ReShade64\.json$' }).Count -gt 0)) { return $true }
+    }
+    return $false
+}
+
+function Install-ReShadeVulkanLayer {
+    # Jogos Vulkan nao carregam dxgi.dll: o ReShade precisa ser registrado como camada Vulkan implicita.
+    # O instalador oficial faz isso em modo silencioso (--headless); a camada global exige UAC uma unica vez.
+    param([string]$TargetExe)
+    $setup = Join-Path (Get-DLSS5PayloadDirectory) "ReShade_Setup_6.8.0_Addon.exe"
+    if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) { throw "ERR_RESHADE_SETUP_MISSING: ReShade_Setup_6.8.0_Addon.exe nao encontrado no payload." }
+    $args = @("`"$TargetExe`"", "--api", "vulkan", "--headless")
+    # 1a tentativa: silenciosa, sem elevacao (basta quando a camada ja esta registrada na maquina)
+    [void](Start-Process -FilePath $setup -ArgumentList $args -PassThru -Wait -WindowStyle Hidden)
+    if (-not (Test-ReShadeVulkanLayerRegistered)) {
+        Write-Status -Message "Registrando a camada Vulkan do ReShade (pedido de administrador unico)..." -Level "INFO"
+        try { [void](Start-Process -FilePath $setup -ArgumentList $args -Verb RunAs -PassThru -Wait) } catch {}
+    }
+    $layerOk = Test-ReShadeVulkanLayerRegistered
+    $appsIni = Get-ReShadeAppsIniPath
+    $registered = $false
+    if (Test-Path -LiteralPath $appsIni -PathType Leaf) {
+        $registered = ((Get-Content -LiteralPath $appsIni -Raw) -match [regex]::Escape($TargetExe))
+    }
+    if (-not $registered) {
+        # Fallback: acrescenta o executavel a lista Apps= do ReShadeApps.ini (formato do ReShade 6.x)
+        try {
+            $dir = Split-Path -Parent $appsIni
+            if (-not (Test-Path -LiteralPath $dir)) { [void](New-Item -ItemType Directory -Path $dir -Force) }
+            $lines = @()
+            if (Test-Path -LiteralPath $appsIni -PathType Leaf) { $lines = @(Get-Content -LiteralPath $appsIni) }
+            $idx = [array]::FindIndex($lines, [Predicate[string]] { param($l) $l -match '^Apps=' })
+            if ($idx -ge 0) { $lines[$idx] = ($lines[$idx].TrimEnd(',') + "," + $TargetExe) } else { $lines += "Apps=$TargetExe" }
+            [System.IO.File]::WriteAllLines($appsIni, $lines, (New-Object System.Text.UTF8Encoding($false)))
+            $registered = $true
+        }
+        catch {}
+    }
+    Write-Status -Message ("Camada Vulkan do ReShade: registro=" + $(if ($layerOk) { "OK" } else { "AUSENTE" }) + " | ReShadeApps.ini=" + $(if ($registered) { "OK" } else { "FALHOU" })) -Level $(if ($layerOk) { "OK" } else { "WARN" })
+    return $layerOk
+}
+
+function Remove-ReShadeVulkanApp {
+    param([string]$TargetExe)
+    $appsIni = Get-ReShadeAppsIniPath
+    if (-not (Test-Path -LiteralPath $appsIni -PathType Leaf)) { return }
+    try {
+        $lines = @(Get-Content -LiteralPath $appsIni | ForEach-Object {
+            if ($_ -match '^Apps=') {
+                $items = @(($_.Substring(5) -split ',') | Where-Object { $_.Trim() -ne '' -and $_.Trim() -ine $TargetExe })
+                "Apps=" + ($items -join ',')
+            }
+            elseif ($_.Trim() -ine $TargetExe) { $_ }
+        })
+        [System.IO.File]::WriteAllLines($appsIni, $lines, (New-Object System.Text.UTF8Encoding($false)))
+    }
+    catch {}
 }
 
 function Test-ValidPe {
@@ -377,11 +526,25 @@ function Resolve-GameTarget {
     $exePath = $null
 
     $allExes = @(Get-ChildItem -LiteralPath $folder -Filter "*.exe" -File -Recurse -Depth 4 -ErrorAction SilentlyContinue)
-    $ignoredPattern = '^(crashreport|crashhandler|unitycrashhandler|unins.*|setup|config|launcher|easyanticheat|battleye|epicgameslauncher|redist|vcredist|dxsetup|quickstart|webinstaller|support|console.*|banana.*)$'
+    # Pastas que nunca contem o executavel do jogo (redistribuiveis, instaladores, ferramentas, backups)
+    $ignoredDirPattern = '\\(redistributables?|_commonredist|commonredist|redist|installers?|support|tools?|launcher|dotnet|directx|vcredist|__installer|_dlss5_backup|_backup[^\\]*|engine\\binaries)(\\|$)'
+    # Nomes que denunciam instaladores, lancadores, crash handlers e utilitarios (busca por substring)
+    $ignoredPattern = '(crashreport|crashhandler|crashpad|unitycrashhandler|unins|setup|install|config|launcher|easyanticheat|eac_|battleye|epicgameslauncher|redist|dxsetup|quickstart|webinstaller|support|console|banana|social-club|socialclub|rockstar|updater|report|activation|benchmark|dedicatedserver|helper|cleanup|touchup|bootstrap)'
     $filtered = @($allExes | Where-Object {
             $baseName = $_.BaseName.ToLower()
-            -not ($baseName -match $ignoredPattern)
+            $dirName = $_.Directory.FullName.ToLower()
+            -not ($baseName -match $ignoredPattern) -and -not ($dirName -match $ignoredDirPattern)
         })
+    # Se o filtro removeu tudo (nome de jogo exotico), volta a lista completa, mas ainda sem pastas de redistribuiveis
+    if ($filtered.Count -eq 0) {
+        $filtered = @($allExes | Where-Object { -not ($_.Directory.FullName.ToLower() -match $ignoredDirPattern) })
+    }
+    if ($filtered.Count -eq 0) { $filtered = $allExes }
+    # Lancadores-stub (PlayGTAIV.exe, *Launcher.exe pequenos) tem poucos KB; se existe um executavel grande, ignora os minusculos
+    $bigOnes = @($filtered | Where-Object { $_.Length -ge 5MB })
+    if ($bigOnes.Count -gt 0) {
+        $filtered = @($filtered | Where-Object { $_.Length -ge 1MB })
+    }
 
     # Se o usu rio apontou diretamente para um execut vel espec fico
     if (-not $targetItem.PSIsContainer -and $targetItem.Extension -ieq ".exe") {
@@ -516,6 +679,66 @@ function Resolve-GameTarget {
     }
 }
 
+# --- LEITOR DA TABELA DE IMPORTACAO PE (PE32 / PE32+) ---
+try {
+    if (-not ([System.Management.Automation.PSTypeName]'DLSS5PeImports').Type) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.IO;
+using System.Text;
+using System.Collections.Generic;
+public static class DLSS5PeImports {
+    public static string[] GetImportedDlls(string path) {
+        var result = new List<string>();
+        byte[] b = File.ReadAllBytes(path);
+        if (b.Length < 0x40 || b[0] != 'M' || b[1] != 'Z') return result.ToArray();
+        int pe = BitConverter.ToInt32(b, 0x3C);
+        if (pe <= 0 || pe + 0x18 > b.Length || b[pe] != 'P' || b[pe+1] != 'E') return result.ToArray();
+        int coff = pe + 4;
+        int numSections = BitConverter.ToUInt16(b, coff + 2);
+        int optSize = BitConverter.ToUInt16(b, coff + 16);
+        int opt = coff + 20;
+        ushort magic = BitConverter.ToUInt16(b, opt);
+        bool pe32plus = magic == 0x20B;
+        int ddOffset = opt + (pe32plus ? 112 : 96);
+        int importDirRva = BitConverter.ToInt32(b, ddOffset + 8);
+        if (importDirRva == 0) return result.ToArray();
+        int sect = opt + optSize;
+        var sections = new List<int[]>();
+        for (int i = 0; i < numSections; i++) {
+            int s = sect + i * 40;
+            if (s + 40 > b.Length) break;
+            int va = BitConverter.ToInt32(b, s + 12);
+            int vsz = BitConverter.ToInt32(b, s + 8);
+            int raw = BitConverter.ToInt32(b, s + 20);
+            int rawSz = BitConverter.ToInt32(b, s + 16);
+            sections.Add(new int[] { va, Math.Max(vsz, rawSz), raw });
+        }
+        Func<int, int> rvaToOff = (rva) => {
+            foreach (var s in sections) if (rva >= s[0] && rva < s[0] + s[1]) return rva - s[0] + s[2];
+            return -1;
+        };
+        int desc = rvaToOff(importDirRva);
+        if (desc < 0) return result.ToArray();
+        for (int i = 0; i < 4096; i++) {
+            int d = desc + i * 20;
+            if (d + 20 > b.Length) break;
+            int nameRva = BitConverter.ToInt32(b, d + 12);
+            if (nameRva == 0) break;
+            int nameOff = rvaToOff(nameRva);
+            if (nameOff < 0 || nameOff >= b.Length) continue;
+            int end = nameOff;
+            while (end < b.Length && b[end] != 0 && end - nameOff < 256) end++;
+            result.Add(Encoding.ASCII.GetString(b, nameOff, end - nameOff));
+        }
+        return result.ToArray();
+    }
+}
+"@
+    }
+}
+catch {}
+
 function Detect-GameGraphicsApi {
     param(
         [Parameter(Mandatory = $true)][string]$TargetExe,
@@ -525,22 +748,43 @@ function Detect-GameGraphicsApi {
         $GameFolder = (Split-Path -Parent $TargetExe)
     }
 
-    # 1. Inspe  o direta do PE Import Table do execut vel alvo (IAT Determin stico)
+    # 1. Tabela de importacao real do PE (IAT) - le os nomes das DLLs que o executavel importa de fato
     if (Test-Path -LiteralPath $TargetExe -PathType Leaf) {
-        try {
-            $fs = [System.IO.File]::OpenRead($TargetExe)
-            $len = [Math]::Min($fs.Length, 4194304)
-            $bytes = New-Object byte[] $len
-            [void]$fs.Read($bytes, 0, $len)
-            $fs.Close()
-            $str = [System.Text.Encoding]::ASCII.GetString($bytes)
-            if ($str -match '(?i)\bd3d12\.dll\b') { return "D3D12" }
-            if ($str -match '(?i)\bvulkan-1\.dll\b') { return "VULKAN" }
-            if ($str -match '(?i)\bd3d11\.dll\b') { return "DXGI" }
-            if ($str -match '(?i)\bd3d9\.dll\b') { return "D3D9" }
-            if ($str -match '(?i)\bopengl32\.dll\b') { return "OPENGL" }
+        $exeNameLow = (Split-Path -Leaf $TargetExe).ToLower()
+        # Sufixo no nome do exe e a evidencia mais forte e nao depende de importacao estatica
+        if ($exeNameLow -match '(^|[_\-. ])(vk|vulkan)([_\-. ]|\.exe$)') { return "VULKAN" }
+        if ($exeNameLow -match '(dx12|d3d12)') { return "D3D12" }
+        if ($exeNameLow -match '(dx11|d3d11)') { return "DXGI" }
+        if ($exeNameLow -match '(dx9|d3d9)')   { return "D3D9" }
+        if ($exeNameLow -match '(x64vk|64vk)') { return "VULKAN" }
+        $imports = @()
+        try { $imports = @([DLSS5PeImports]::GetImportedDlls($TargetExe) | ForEach-Object { $_.ToLower() }) } catch { $imports = @() }
+
+        $found = New-Object System.Collections.Generic.List[string]
+        if ($imports -contains "d3d12.dll")    { [void]$found.Add("D3D12") }
+        if ($imports -contains "vulkan-1.dll") { [void]$found.Add("VULKAN") }
+        if (($imports -contains "d3d11.dll") -or ($imports -contains "dxgi.dll")) { [void]$found.Add("DXGI") }
+        if ($imports -contains "d3d9.dll")     { [void]$found.Add("D3D9") }
+        if ($imports -contains "opengl32.dll") { [void]$found.Add("OPENGL") }
+
+        if ($found.Count -eq 0) {
+            # Sem importacao estatica (carregamento dinamico): procura os nomes no binario inteiro
+            try {
+                $str = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($TargetExe))
+                if ($str -match '(?i)\bd3d12\.dll\b')    { [void]$found.Add("D3D12") }
+                if ($str -match '(?i)\bvulkan-1\.dll\b') { [void]$found.Add("VULKAN") }
+                if ($str -match '(?i)\bd3d11\.dll\b')    { [void]$found.Add("DXGI") }
+                if ($str -match '(?i)\bd3d9\.dll\b')     { [void]$found.Add("D3D9") }
+                if ($str -match '(?i)\bopengl32\.dll\b') { [void]$found.Add("OPENGL") }
+            }
+            catch {}
         }
-        catch {}
+
+        if ($found.Count -gt 0) {
+            foreach ($api in @("D3D12", "VULKAN", "DXGI", "D3D9", "OPENGL")) {
+                if ($found.Contains($api)) { return $api }
+            }
+        }
     }
 
     # 2. Verifica  o de DLLs distribu das na pasta local do jogo
@@ -634,14 +878,14 @@ function Detect-GameUpscalerType {
     }
 
     # Se apenas nvngx_dlss.dll estiver presente:
-    # Validar se nao se trata de residuo do payload (58956400 bytes) injetado em jogo sem suporte nativo
+    # Validar se nao se trata de copia do nosso proprio payload injetado em jogo sem suporte nativo
     if ($allFiles.Contains("nvngx_dlss.dll")) {
         $isOrphanPayload = $false
         foreach ($fPath in $folders) {
             $dlssCheck = Join-Path $fPath "nvngx_dlss.dll"
             if (Test-Path -LiteralPath $dlssCheck -PathType Leaf) {
                 $len = (Get-Item -LiteralPath $dlssCheck).Length
-                if ($len -eq 58956400) {
+                if ((Test-PayloadIdenticalFile -GameFile $dlssCheck -PayloadName "nvngx_dlss.dll") -or ($len -eq 58956400)) {
                     $hasDlssInExe = $false
                     $exes = @(Get-ChildItem -LiteralPath $fPath -Filter "*.exe" -File -ErrorAction SilentlyContinue)
                     foreach ($exe in $exes) {
@@ -1019,6 +1263,7 @@ function Show-InstallationSuccessDialog {
         $this.Activate()
     })
 
+    Apply-DpiScaling -Form $succForm
     if ($form -and $form.Visible) {
         [void]$succForm.ShowDialog($form)
     }
@@ -1257,6 +1502,7 @@ function Show-FriendlyErrorDialog {
     $btnOk.Add_Click({ $errForm.Close() })
     [void]$errForm.Controls.Add($btnOk)
 
+    Apply-DpiScaling -Form $errForm
     [void]$errForm.ShowDialog()
 }
 
@@ -1400,6 +1646,7 @@ function Show-SystemDiagnosisDialog {
     $btnDiagClose.Add_Click({ $diagForm.Close() })
     [void]$diagForm.Controls.Add($btnDiagClose)
 
+    Apply-DpiScaling -Form $diagForm
     [void]$diagForm.ShowDialog()
 }
 
@@ -1889,13 +2136,23 @@ function Install-Dlss5 {
 
     # 1. ReShade proxy (adaptacao automatica por API)
     $dxgiSrc = Join-Path (Get-DLSS5PayloadDirectory) $proxyDll
-    if (Test-Path -LiteralPath $dxgiSrc) {
-        Safe-Copy -Src $dxgiSrc -DstName "dxgi.dll"
+    if ($api -eq "VULKAN") {
+        # Vulkan nao passa por dxgi.dll: instala o ReShade como camada Vulkan (instalador oficial, silencioso)
+        if ($ProgressCallback) { &$ProgressCallback 58 "Registrando camada Vulkan do ReShade para $($target.ExeName)..." }
+        [void](Install-ReShadeVulkanLayer -TargetExe $target.Executable)
+        $state.VulkanLayer = $true
+    }
+    elseif (Test-Path -LiteralPath $dxgiSrc) {
+        # Um unico proxy ReShade por API: dois proxies no mesmo processo carregam o ReShade duas vezes e o segundo
+        # esconde o dxgi.dll real, derrubando o dispositivo D3D12 privado do Feeder (DXGI_ERROR_UNSUPPORTED).
         if ($api -eq "D3D9") {
             Safe-Copy -Src $dxgiSrc -DstName "d3d9.dll"
         }
-        if ($api -eq "OPENGL") {
+        elseif ($api -eq "OPENGL") {
             Safe-Copy -Src $dxgiSrc -DstName "opengl32.dll"
+        }
+        else {
+            Safe-Copy -Src $dxgiSrc -DstName "dxgi.dll"
         }
     }
 
@@ -2120,6 +2377,7 @@ function Uninstall-Dlss5 {
 
     Write-Status -Message "================================================================================" -Level "INFO"
     Write-Status -Message "[RESTAURACAO/UNINSTALL] Iniciando procedimento de restauracao de fabrica em: '$targetFolder'" -Level "INFO"
+    Remove-ReShadeVulkanApp -TargetExe $target.Executable
 
     # Lista estrita de artefatos exclusivos do DLSS 5 / Feeder / ReShade / OptiScaler
     $dlss5Artifacts = @(
@@ -2238,7 +2496,7 @@ function Uninstall-Dlss5 {
             $pPath = Join-Path $targetFolder $fn
             if (Test-Path -LiteralPath $pPath -PathType Leaf) {
                 $pLen = (Get-Item -LiteralPath $pPath).Length
-                if ($pLen -eq 58956400 -or ($savedInjected -contains $fn)) {
+                if ((Test-PayloadIdenticalFile -GameFile $pPath -PayloadName "nvngx_dlss.dll") -or ($pLen -eq 58956400) -or ($savedInjected -contains $fn)) {
                     $hasNative = $false
                     $exes = @(Get-ChildItem -LiteralPath $targetFolder -Filter "*.exe" -File -ErrorAction SilentlyContinue)
                     foreach ($exe in $exes) {
@@ -2422,10 +2680,14 @@ function Start-GameExecutable {
     # Autocura preventiva antes de inicializar o jogo
     Repair-GameCriticalDependencies -TargetFolder $folder -TargetExe $ExecutablePath
 
-    # Garante que sl.dlss_nr.dll conflitante nao esteja presente na pasta do jogo
-    $staleSl = Join-Path $folder "sl.dlss_nr.dll"
-    if (Test-Path -LiteralPath $staleSl -PathType Leaf) {
-        Remove-Item -LiteralPath $staleSl -Force -ErrorAction SilentlyContinue
+    # Em jogos sem Streamline (ex: jogos que usam Feeder ou OptiScaler), sl.dlss_nr.dll nao deve existir
+    # Mas em jogos com Streamline (Modo 1 Direct, como Forza Horizon), sl.dlss_nr.dll e o plugin essencial do DLSS-NR!
+    $streamlineFile = Join-Path $folder "sl.interposer.dll"
+    if (-not (Test-Path -LiteralPath $streamlineFile -PathType Leaf)) {
+        $staleSl = Join-Path $folder "sl.dlss_nr.dll"
+        if (Test-Path -LiteralPath $staleSl -PathType Leaf) {
+            Remove-Item -LiteralPath $staleSl -Force -ErrorAction SilentlyContinue
+        }
     }
 
     # Forca preferencia de GPU dedicada de alto desempenho (evita DX12 RHI / selecao de iGPU no Windows 11)
@@ -2899,7 +3161,13 @@ $comboLang.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9)
 [void]$comboLang.Items.AddRange(@("Português (Brasil)", "English (US)", "Español", "Deutsch", "Français", "Italiano", "日本語", "简体中文", "Русский", "한국어"))
 $langCodes = @("PT", "EN", "ES", "DE", "FR", "IT", "JA", "ZH", "RU", "KO")
 $initialLangIdx = [array]::IndexOf($langCodes, $script:CurrentLang)
-if ($initialLangIdx -lt 0) { $initialLangIdx = 1 }
+if ($initialLangIdx -lt 0) {
+    try {
+        $sysLang = (Get-UICulture).TwoLetterISOLanguageName.ToLower()
+        $langMap = @{ "pt" = 0; "en" = 1; "es" = 2; "de" = 3; "fr" = 4; "it" = 5; "ja" = 6; "zh" = 7; "ru" = 8; "ko" = 9 }
+        if ($langMap.ContainsKey($sysLang)) { $initialLangIdx = $langMap[$sysLang] } else { $initialLangIdx = 1 }
+    } catch { $initialLangIdx = 1 }
+}
 $comboLang.SelectedIndex = $initialLangIdx
 [void]$header.Controls.Add($comboLang)
 
@@ -2985,11 +3253,12 @@ $gameList.SmallImageList = $imageList
 [void]$gameList.Columns.Add("API / Arq", 90)
 [void]$gameList.Columns.Add("Modo / Status", 130)
 $gameList.Add_Resize({
+    $k = $script:DpiScale
     $avail = $gameList.ClientSize.Width
-    if ($avail -gt 320) {
-        $gameList.Columns[1].Width = 90
-        $gameList.Columns[2].Width = 130
-        $gameList.Columns[0].Width = [Math]::Max(140, $avail - 225)
+    if ($avail -gt (320 * $k)) {
+        $gameList.Columns[1].Width = [int](90 * $k)
+        $gameList.Columns[2].Width = [int](130 * $k)
+        $gameList.Columns[0].Width = [Math]::Max([int](140 * $k), $avail - [int](225 * $k))
     }
 })
 try {
@@ -3398,7 +3667,7 @@ function Update-UiLanguage {
     }
 
     $btnInstallText = $d.BtnInstall
-    if ([string]::IsNullOrWhiteSpace($btnInstallText)) { $btnInstallText = "[⚡] 1-CLIQUE: INSTALAR DLSS 5" }
+    if ([string]::IsNullOrWhiteSpace($btnInstallText)) { $btnInstallText = "[>] 1-CLIQUE: INSTALAR DLSS 5" }
     $btnInstall.Text = $btnInstallText
 
     $gameList.Columns[0].Text = $d.ColGame
@@ -3497,7 +3766,7 @@ function Select-GameInInspector {
         $lblGameStatus.ForeColor = [System.Drawing.Color]::FromArgb(255, 205, 90)
         
         $btnText = $d.BtnReinstall
-        if ([string]::IsNullOrWhiteSpace($btnText)) { $btnText = "[⚡] REINSTALAR / ATUALIZAR DLSS 5" }
+        if ([string]::IsNullOrWhiteSpace($btnText)) { $btnText = "[>] REINSTALAR / ATUALIZAR DLSS 5" }
         $btnInstall.Text = $btnText
         Style-Button -Button $btnInstall -BaseColor ([System.Drawing.Color]::FromArgb(65, 140, 45)) -HoverColor ([System.Drawing.Color]::FromArgb(85, 175, 55)) -TextColor ([System.Drawing.Color]::White)
     }
@@ -3508,7 +3777,7 @@ function Select-GameInInspector {
         $lblGameStatus.ForeColor = [System.Drawing.Color]::FromArgb(118, 225, 125)
         
         $btnText = $d.BtnInstall
-        if ([string]::IsNullOrWhiteSpace($btnText)) { $btnText = "[⚡] 1-CLIQUE: INSTALAR DLSS 5" }
+        if ([string]::IsNullOrWhiteSpace($btnText)) { $btnText = "[>] 1-CLIQUE: INSTALAR DLSS 5" }
         $btnInstall.Text = $btnText
         Style-Button -Button $btnInstall -BaseColor ([System.Drawing.Color]::FromArgb(118, 185, 0)) -HoverColor ([System.Drawing.Color]::FromArgb(140, 220, 0)) -TextColor ([System.Drawing.Color]::Black)
     }
@@ -3986,5 +4255,6 @@ if (-not $env:DLSS5_HEADLESS) {
         $this.Activate()
         $this.BringToFront()
     })
+    Apply-DpiScaling -Form $form
     [void][System.Windows.Forms.Application]::Run($form)
 }

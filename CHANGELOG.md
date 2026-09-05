@@ -4,7 +4,36 @@ All notable changes, architectural overhauls, and bug fixes for the **1 Click DL
 
 ## [v2.7.0-beta] - 2026-09-04
 
-### 🕹️ Universal Console Emulator Support
+### 🎯 Mode 1 (DIRECT DLSS) Absolute Zero-Overhead Architecture & DLSS-NR Fix
+- **Zero-Shader Compilation & Active Purge:**
+  - Fixed an issue where shader collections were copied into Mode 1, causing swapchain descriptor thrashing in Direct3D 12 and severely degrading game framerates.
+  - Mode 1 now actively removes any residual `reshade-shaders/` folder and `ReShadePreset.ini` from the game directory.
+  - Set `PerformanceMode=1`, `NoReloadOnInit=1`, and empty `EffectSearchPaths` in `ReShade.ini` to guarantee zero shader execution and 100% native FPS.
+  - Hardcoded `EnableHooks=1` so RenoDX hooks the D3D12/Streamline pipeline properly to capture frame guides.
+- **Streamline DLSS-NR Plugin Preservation:**
+  - Restored automatic copying of official NVIDIA-signed `sl.dlss_nr.dll` (v2.13.0.0) for titles using NVIDIA Streamline (*Forza Horizon 5/6*, *Cyberpunk 2077*).
+  - Fixed pre-launch bug in `Start-GameExecutable` that was deleting `sl.dlss_nr.dll` immediately before launching Streamline titles.
+
+### 🌐 Merged Community Pull Requests (PRs #14, #15, #16, #17, #18, #20)
+- **High-DPI Display Scaling Engine (PR #14):**
+  - Added `DLSS5DpiQuery` P/Invoke to `GetDpiForSystem`, `Scale-ControlTree`, and `Apply-DpiScaling` dynamically scaling all WinForms windows, dialogs (Success, Error, System Diagnosis), and ListView columns by real monitor DPI (125%, 150%, 200%), eliminating small rendering and text overlaps on 4K displays.
+- **True PE Import Table Reader & Stub Filtering (PR #15):**
+  - Integrated `[DLSS5PeImports]::GetImportedDlls` reading PE32/PE32+ headers instead of scanning 4MB byte chunks.
+  - Filtered out installer, support, redistributable, and backup directories, and ignored small launcher stubs (<1MB) when real binaries (>=5MB) exist (resolves false launcher detection in *GTA IV*).
+  - Priority detection using executable name suffixes (`_DX12`, `x64vk`, `_dx11`).
+- **Payload Identity Verification Engine (PR #16):**
+  - Added `Test-PayloadIdenticalFile` comparing file size and SHA-256 against bundled payload.
+  - Prevents our own injected `nvngx_dlss.dll` from triggering a false `NATIVE_DLSS` classification in subsequent scans.
+  - Allows `Uninstall-Dlss5` to safely remove injected `nvngx_dlss.dll` while strictly preserving native game files.
+- **Single ReShade Proxy & Headless Vulkan Implicit Layer (PR #17):**
+  - Fixed dual proxy collision in OpenGL/D3D9 titles where loading both `dxgi.dll` and `opengl32.dll` crashed the private D3D12 feeder device (`DXGI_ERROR_UNSUPPORTED`). Now installs strictly one proxy per API.
+  - Added headless Vulkan implicit layer registration via `ReShade_Setup_6.8.0_Addon.exe` and `ReShadeApps.ini` management for native Vulkan games (*DOOM*).
+  - Added Steam AppID auto-resolution and launch through `steam://rungameid/` for Steam DRM titles.
+- **Windows UI Culture Detection & Unicode Box Fix (PR #18):**
+  - Auto-selects the system display language from `Get-UICulture` on first launch while allowing manual override in the selector.
+  - Sanitized emojis in `translations.json` and replaced `[⚡]` markers with ASCII `[>]` to prevent square box glyphs (`[]`) on systems with legacy GDI fonts.
+- **Payload Verification Tooling (PR #20):**
+  - Added `tools/Verify-Payload.ps1` and `tools/payload-manifest.json` for auditing local binaries against reviewed SHA-256 hashes and Authenticode signatures.
 - **Native Detection & Injection for 12+ Console Generations:**
   - Added dedicated executable signatures and heuristics for PlayStation 1 (DuckStation, ePSXe, Beetle/Mednafen), PlayStation 2 (PCSX2), PlayStation 3 (RPCS3), PlayStation 4 (shadPS4), PS Vita (Vita3K), Nintendo Switch (Ryujinx, Yuzu, Suyu, Eden, Torzu), Nintendo Wii & GameCube (Dolphin), Nintendo Wii U (Cemu), Nintendo 3DS (Citra, Lime3DS, Azahar), Nintendo DS & GBA (melonDS, DeSmuME, mGBA, No$GBA, VBA), Nintendo Retro (Project64, Snes9x, Mesen, FCEUX, Nestopia), Xbox & Xbox 360 (Xenia, Xenia-Canary, Cxbx-Reloaded), and PSP / Arcade / Multi-System (PPSSPP, Flycast, Redream, RetroArch, MAME, ScummVM).
   - Extended multi-drive scanner to automatically scan `\Emulators`, `\Emuladores`, `\Emu`, `\RetroBat\emulators`, `\LaunchBox\Emulators`, `\Playnite\Emulators`, `%LOCALAPPDATA%\Programs`, `%APPDATA%\rpcs3`, and `ProgramFiles`.

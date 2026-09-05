@@ -6,11 +6,41 @@
 ## 🇧🇷 Português
 
 ### 🌟 Destaques da Versão v2.7.0-beta
-A versão **v2.7.0-beta** expande as fronteiras do **1-Click DLSS 5**, trazendo suporte nativo para **Emuladores de todas as gerações de consoles**, um **Sistema de Telemetria e Auditoria Forense Contínua** de nível corporativo no arquivo de log, rastreamento passo a passo de todas as ações do usuário na interface, resolução do erro de **DX12 RHI / Seleção de GPU no Windows 11**, carregamento instantâneo com **varredura em segundo plano e cache persistente**, e detecção automática do **idioma do sistema operacional**.
+A versão **v2.7.0-beta** expande as fronteiras do **1-Click DLSS 5**, trazendo a correção definitiva e restauração com **Overhead Zero do Modo 1 (Direct DLSS & DLSS-NR)**, a integração das melhores melhorias da comunidade (**PRs #14, #15, #16, #17, #18 e ferramentas do PR #20**), suporte nativo para **Emuladores de todas as gerações de consoles**, um **Sistema de Telemetria e Auditoria Forense Contínua** de nível corporativo no arquivo de log, rastreamento passo a passo de todas as ações do usuário na interface, resolução do erro de **DX12 RHI / Seleção de GPU no Windows 11**, carregamento instantâneo com **varredura em segundo plano e cache persistente**, e detecção automática do **idioma do sistema operacional**.
 
 ---
 
-### 🕹️ 1. Suporte Universal a Emuladores (PlayStation, Nintendo, Xbox, Retro)
+### 🎯 0. Correção Definitiva do Modo 1 (Direct DLSS) — Desempenho 100% Nativo & DLSS-NR
+* **Eliminação Absoluta de Overhead de Shaders:**
+  * Corrigido o problema em que o Modo 1 tentava compilar shaders desnecessários, causando travamentos de descritores no Direct3D 12 e derrubando os FPS do jogo.
+  * O instalador do Modo 1 agora purga ativamente qualquer resquício de `reshade-shaders/` e `ReShadePreset.ini` da pasta do jogo.
+  * O `ReShade.ini` do Modo 1 é gerado em modo ultralimpo com `PerformanceMode=1`, `NoReloadOnInit=1`, `EffectSearchPaths=` vazio e `EnableHooks=1`.
+* **Preservação e Carregamento do Plugin Streamline DLSS-NR:**
+  * Restabelecida a injeção do plugin oficial assinado pela NVIDIA `sl.dlss_nr.dll` (v2.13.0.0) para jogos com NVIDIA Streamline (*Forza Horizon 5/6*, *Cyberpunk 2077*).
+  * Corrigido o bug em `Start-GameExecutable` que deletava acidentalmente o `sl.dlss_nr.dll` antes da inicialização de jogos com Streamline.
+
+---
+
+### 🌐 1. Melhorias Integradas dos Pull Requests da Comunidade (#14, #15, #16, #17, #18, #20)
+* **Escalonamento DPI Real para Telas 4K / High-DPI (PR #14):**
+  * Integração de `Apply-DpiScaling` e `Scale-ControlTree` com consulta nativa via `GetDpiForSystem` (125%, 150%, 200%). A interface principal e todas as janelas de diálogo agora renderizam no tamanho correto em qualquer resolução.
+* **Leitor Real da Tabela de Importação PE & Filtro de Instaladores (PR #15):**
+  * Classe C# `DLSS5PeImports` que lê o diretório IAT real de executáveis PE32/PE32+, eliminando limitações da varredura linear de 4MB.
+  * Filtro aprimorado que ignora subpastas de redistribuíveis, ferramentas e stubs minúsculos de inicialização (<1MB) quando o executável real do jogo (>=5MB) está presente (ex: *GTA IV*).
+* **Verificação de Identidade de Payload por SHA-256 (PR #16):**
+  * Nova função `Test-PayloadIdenticalFile` que compara tamanho e hash criptográfico contra o payload. Evita falsos positivos de `NATIVE_DLSS` em jogos sem suporte e garante que desinstalações removam apenas as cópias injetadas pelo programa.
+* **Proxy Único por API & Camada Vulkan Implícita (PR #17):**
+  * Em jogos OpenGL e D3D9, instala apenas o proxy correspondente (`opengl32.dll` ou `d3d9.dll`), impedindo o conflito de duplo proxy com `dxgi.dll` que quebrava o dispositivo Direct3D 12 do Feeder (`0x887A0004`).
+  * Suporte nativo e silencioso para jogos Vulkan (*DOOM*) via registro da camada implícita do ReShade.
+* **Detecção Automática do Idioma do Windows & Limpeza de Emojis (PR #18):**
+  * Detecta automaticamente o idioma da interface do Windows na inicialização, aplicando o idioma correto sem travar em inglês ou português.
+  * Sanitização de emojis no `translations.json` e substituição de marcadores Unicode por `[>]`, eliminando caracteres em forma de caixa (`[]`) em fontes GDI padrão.
+* **Ferramenta de Auditoria e Verificação de Integridade (PR #20):**
+  * Adicionados `tools/Verify-Payload.ps1` e `tools/payload-manifest.json` para auditoria independente de SHA-256 e assinaturas Authenticode de todos os binários da distribuição.
+
+---
+
+### 🕹️ 2. Suporte Universal a Emuladores (PlayStation, Nintendo, Xbox, Retro)
 * **Reconhecimento Nativo e Injeção Otimizada para mais de 12 Plataformas:**
   * **PlayStation 1:** DuckStation (`duckstation-qt-x64-ReleaseLTCG.exe`, `duckstation-nogui.exe`), ePSXe, Beetle/Mednafen.
   * **PlayStation 2:** PCSX2 (`pcsx2-qtx64-avx2.exe`, `pcsx2-qtx64.exe`, `pcsx2.exe`).
