@@ -2,6 +2,14 @@
 
 All notable changes, architectural overhauls, and bug fixes for the **1 Click DLSS 5** project are documented in this file.
 
+## [v3.0.0] - 2026-09-05
+
+### 🚀 Major Architectural Refactoring & Stability Overhaul
+- **Complete Modular Architecture:** Refactored internal subsystems into a dedicated modular engine (`core/engine/`), improving code maintainability, execution speed, and transactional reliability.
+- **Comprehensive Bug Fixes:** Fixed multiple issues across game auto-discovery, API detection heuristics, multi-architecture library injection, and shader compilation.
+- **Enhanced Transactional Journal & Rollback:** Upgraded write-ahead transaction manifest (`_DLSS5_Backup\manifest.json`) guaranteeing 100% byte-exact factory uninstallation and preservation of original game files.
+- **Forensic Telemetry & Logging:** Centralized comprehensive session logging at `\1-Click-DLSS5\core\1-Click-DLSS5.log` recording hardware parameters, GPU scheduling (HAGS), detection telemetry, and deployment trace for rapid issue diagnostics.
+
 ## [v2.7.0-beta] - 2026-09-04
 
 ### 🎯 Mode 1 (DIRECT DLSS) Absolute Zero-Overhead Architecture & DLSS-NR Fix

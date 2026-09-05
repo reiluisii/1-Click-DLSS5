@@ -4,7 +4,7 @@
   "package": "1-Click-DLSS5-v2.6.0-release.zip",
   "files": {
     "1-Click-DLSS5.exe": {
-      "sha256": "35f5f24b79c9121de8323f30f8acca14757bbddd40c46011dbab3b12b79b17eb",
+      "sha256": "9c76ed7c47859ae2ce01f61622ad10a3554e0a76ba6baa2d2eba58cfb2285ed4",
       "size": 39936,
       "expectedSigner": null,
       "signatureStatus": "NotSigned"
@@ -64,8 +64,8 @@
       "signatureStatus": "Valid"
     },
     "core/payload/nvngx_dlssnr.dll": {
-      "sha256": "6eb209e764f39872625debd6abaf45e2bb6322f6f270f781f70c059ae30b3927",
-      "size": 165830144,
+      "sha256": "4b8d19bc3eff58a084f5eca7489c921501c203450169fb82ff4f649a4482ba05",
+      "size": 165840496,
       "expectedSigner": null,
       "signatureStatus": "NotSigned",
       "note": "Modified leaked NVIDIA build (310.8.SF.0). NVIDIA Authenticode signature stripped; PE checksum invalid. Cannot be verified."

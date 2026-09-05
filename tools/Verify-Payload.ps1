@@ -12,8 +12,15 @@
 
     Run from the repository root:  powershell -ExecutionPolicy Bypass -File tools\Verify-Payload.ps1
 #>
-[CmdletBinding()]
-param([string]$Root = (Split-Path -Parent $PSScriptRoot))
+param([string]$Root = "")
+
+if ([string]::IsNullOrWhiteSpace($Root)) {
+    if ($PSScriptRoot) {
+        $Root = Split-Path -Parent $PSScriptRoot
+    } else {
+        $Root = (Get-Location).Path
+    }
+}
 
 $manifestPath = Join-Path $PSScriptRoot "payload-manifest.json"
 $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json

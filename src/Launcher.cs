@@ -12,8 +12,8 @@ using System.Windows.Forms;
 [assembly: AssemblyProduct("1 Click DLSS 5")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 MIT License")]
 [assembly: AssemblyTrademark("DLSS 5 Neural Control Center")]
-[assembly: AssemblyVersion("2.7.0.0")]
-[assembly: AssemblyFileVersion("2.7.0.0")]
+[assembly: AssemblyVersion("3.0.0.0")]
+[assembly: AssemblyFileVersion("3.0.0.0")]
 
 namespace OneClickDLSS5
 {
