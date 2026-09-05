@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     1 Click DLSS 5 v2.6.0-release — Universal Neural Control Center
     Auto-Descoberta Instantânea de Jogos (Steam, Epic, GOG, Xbox, EA), Motor de Resolução em 1 Clique (Auto-Fix),
@@ -1408,7 +1408,7 @@ function Set-Dlss5ReShadeIni {
     param(
         [Parameter(Mandatory = $true)][string]$IniPath,
         [Parameter(Mandatory = $false)][bool]$IsFeederMode = $true,
-        [Parameter(Mandatory = $false)][int]$EnableHooks = 2
+        [Parameter(Mandatory = $false)][int]$EnableHooks = 1
     )
     $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     if ($IsFeederMode) {
@@ -1508,24 +1508,24 @@ DisabledAddons=Generic Depth,Effect Runtime Sync
 OverlayCollapsed=DLSS 5 Neural Rendering@renodx-dlss5.addon64,Generic Depth,Effect Runtime Sync
 
 [GENERAL]
-EffectSearchPaths=.\reshade-shaders\Shaders\**
+EffectSearchPaths=
 IntermediateCachePath=$env:TEMP\ReShade
 NoDebugInfo=1
 NoEffectCache=0
-NoReloadOnInit=0
-PerformanceMode=0
-PresetPath=.\ReShadePreset.ini
+NoReloadOnInit=1
+PerformanceMode=1
+PresetPath=
 PresetShortcutKeys=
 PresetShortcutPaths=
-PresetTransitionDuration=1000
-SkipLoadingDisabledEffects=0
+PresetTransitionDuration=0
+SkipLoadingDisabledEffects=1
 StartupPresetPath=
-TextureSearchPaths=.\reshade-shaders\Textures\**
+TextureSearchPaths=
 
 [INPUT]
 ForceShortcutModifiers=1
 InputProcessing=2
-KeyEffects=35,0,0,0
+KeyEffects=0,0,0,0
 KeyFPS=0,0,0,0
 KeyFrametime=0,0,0,0
 KeyNextPreset=0,0,0,0
@@ -1535,16 +1535,16 @@ KeyReload=0,0,0,0
 KeyScreenshot=44,0,0,0
 
 [OVERLAY]
-AutoSavePreset=1
+AutoSavePreset=0
 ClockFormat=0
 FPSPosition=1
 Language=
 ShowClock=0
-ShowForceLoadEffectsButton=1
-ShowFPS=2
+ShowForceLoadEffectsButton=0
+ShowFPS=0
 ShowFrameTime=0
 ShowPresetName=0
-ShowPresetTransitionMessage=1
+ShowPresetTransitionMessage=0
 ShowScreenshotMessage=1
 TutorialProgress=4
 VariableListHeight=200.000000
@@ -1958,72 +1958,32 @@ function Install-Dlss5 {
 
     # 4. Injecao Especifica por Modo
     if ($effectiveMode -eq "DIRECT") {
-        # JOGOS COM DLSS NATIVO: NUNCA sobrescrever o interposer Streamline nativo do jogo (ex: The Witcher 3, Cyberpunk)
+        # JOGOS COM DLSS NATIVO: NUNCA sobrescrever o interposer Streamline nativo do jogo (ex: The Witcher 3, Cyberpunk, Forza)
         # para evitar erros de Entry Point (como slGetFeatureSettings ausente).
-        # Apenas injetamos o proxy ReShade, o RenoDX Addon e o modelo nvngx_dlssnr.dll.
+        # Apenas injetamos o proxy ReShade, o RenoDX Addon, o modelo nvngx_dlssnr.dll e o plugin oficial sl.dlss_nr.dll (se Streamline presente).
         $hasStreamline = (Test-Path -LiteralPath (Join-Path $targetFolder "sl.interposer.dll") -PathType Leaf)
-        $hookVal = if ($hasStreamline) { 2 } else { 1 }
-        
-        # JOGOS COM DLSS NATIVO:
-        # NUNCA injetar sl.dlss_nr.dll! Em jogos Unreal Engine 5 (como S.T.A.L.K.E.R. 2) e outros com Streamline oficial,
-        # o interposer oficial do jogo (sl.interposer.dll) rejeita sl.dlss_nr.dll nao assinado pelo appId do jogo,
-        # causando aborto da inicializacao do dispositivo D3D12 (DX12 RHI / ChooseAdapter failure).
-        # O RenoDX addon (renodx-dlss5.addon64) avalia e executa DLSS-NR diretamente via NGX (nvngx_dlssnr.dll),
-        # dispensando totalmente o plugin de Streamline.
-        $staleSlNr = Join-Path $targetFolder "sl.dlss_nr.dll"
-        if (Test-Path -LiteralPath $staleSlNr -PathType Leaf) {
-            Remove-Item -LiteralPath $staleSlNr -Force -ErrorAction SilentlyContinue
-            Write-Status -Message "Removido sl.dlss_nr.dll obsoleto para garantir compatibilidade com Streamline e DX12 RHI." -Level "INFO"
-        }
+        $hookVal = 1
 
-        # Em jogos D3D12 no Modo DIRECT, fixamos EnableHooks=2 (NGX-only).
-        # Evita contended patch site com modulos Streamline nativos que causam crash ou falha de RHI no boot.
-        $hookVal = 2
+        # Se o jogo possui Streamline, fornecemos o plugin oficial assinado sl.dlss_nr.dll para que o Streamline resolva o DLSS-NR
+        $slNrSrc = Join-Path (Get-DLSS5PayloadDirectory) "sl.dlss_nr.dll"
+        if ($hasStreamline -and (Test-Path -LiteralPath $slNrSrc -PathType Leaf)) {
+            Safe-Copy -Src $slNrSrc -DstName "sl.dlss_nr.dll"
+        }
 
         # Registra preferencia de GPU de Alto Desempenho (dGPU) para evitar selecao erronea de iGPU em CPUs hibridas (ex: Ryzen 9000/7000)
         Set-GameHighPerformanceGpuPreference -ExecutablePath $target.Executable
 
-        # Shaders e Texturas opcionais para ReShade no Modo DIRECT (apenas pos-processamento leve: CAS, Vibrance, Tonemap, SMAA, FXAA, Splitscreen)
-        # NUNCA copiar shaders de Feeder (lumenite_*.fx, DLSS5_Feed.fx) para o Modo 1 para evitar recompilacao pesada e perda de FPS!
-        $shaderDir = Join-Path $targetFolder "reshade-shaders\Shaders"
-        [void](New-Item -ItemType Directory -Path $shaderDir -Force)
-        $mode1Shaders = @("CAS.fx", "Tonemap.fx", "Vibrance.fx", "SMAA.fx", "FXAA.fx", "Splitscreen.fx", "ReShade.fxh", "ReShadeUI.fxh", "SMAA.fxh", "FXAA.fxh", "DrawText.fxh")
-        $feederShadersSrc = Join-Path $feederPayload "shaders"
-        foreach ($sf in $mode1Shaders) {
-            $sp = Join-Path $feederShadersSrc $sf
-            if (Test-Path -LiteralPath $sp -PathType Leaf) {
-                Copy-Item -LiteralPath $sp -Destination (Join-Path $shaderDir $sf) -Force
-            }
+        # No Modo DIRECT, shaders e presets NUNCA devem existir para garantir operacao direta, zero compilacao e FPS maximo!
+        $staleShaders = Join-Path $targetFolder "reshade-shaders"
+        if (Test-Path -LiteralPath $staleShaders -PathType Container) {
+            Remove-Item -LiteralPath $staleShaders -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Status -Message "Higienizacao: removida pasta reshade-shaders residual para liberar FPS maximo no Modo DIRECT." -Level "INFO"
         }
-        $incSrc = Join-Path $feederShadersSrc "include"
-        if (Test-Path -LiteralPath $incSrc -PathType Container) {
-            Copy-Item -LiteralPath $incSrc -Destination (Join-Path $shaderDir "include") -Recurse -Force
+        $stalePreset = Join-Path $targetFolder "ReShadePreset.ini"
+        if (Test-Path -LiteralPath $stalePreset -PathType Leaf) {
+            Remove-Item -LiteralPath $stalePreset -Force -ErrorAction SilentlyContinue
+            Write-Status -Message "Higienizacao: removido ReShadePreset.ini residual para operacao direta e sem overhead." -Level "INFO"
         }
-        # Remove eventuais shaders de Feeder residuais caso tenha havido troca de modo
-        Get-ChildItem -LiteralPath $shaderDir -Filter "lumenite_*.fx" -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-        Get-ChildItem -LiteralPath $shaderDir -Filter "DLSS5_Feed.fx" -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-        
-        $texPayload = Join-Path $feederPayload "textures"
-        if (Test-Path -LiteralPath $texPayload -PathType Container) {
-            $texDir = Join-Path $targetFolder "reshade-shaders\Textures"
-            [void](New-Item -ItemType Directory -Path $texDir -Force)
-            Get-ChildItem -LiteralPath $texPayload | Copy-Item -Destination $texDir -Recurse -Force
-        }
-        if ($state.InjectedFiles -notcontains "reshade-shaders") { $state.InjectedFiles += "reshade-shaders" }
-
-        $targetPreset = Join-Path $targetFolder "ReShadePreset.ini"
-        if ((Test-Path -LiteralPath $targetPreset -PathType Leaf) -and ($state.InjectedFiles -notcontains "ReShadePreset.ini")) {
-            $pContent = Get-Content -LiteralPath $targetPreset -Raw -ErrorAction SilentlyContinue
-            if ($pContent -notmatch 'DLSS 5|renodx-dlss5|dlss5-feed|ContrastAdaptiveSharpen') {
-                $bDst = Join-Path $backupFolder "ReShadePreset.ini"
-                if (-not (Test-Path -LiteralPath $bDst -PathType Leaf)) {
-                    Copy-Item -LiteralPath $targetPreset -Destination $bDst -Force
-                    if ($state.BackedUpFiles -notcontains "ReShadePreset.ini") { $state.BackedUpFiles += "ReShadePreset.ini" }
-                }
-            }
-        }
-        Set-Dlss5PresetIni -PresetPath $targetPreset -IsFeederMode $false
-        if ($state.InjectedFiles -notcontains "ReShadePreset.ini") { $state.InjectedFiles += "ReShadePreset.ini" }
 
         $targetIni = Join-Path $targetFolder "ReShade.ini"
         if ((Test-Path -LiteralPath $targetIni -PathType Leaf) -and ($state.InjectedFiles -notcontains "ReShade.ini")) {
