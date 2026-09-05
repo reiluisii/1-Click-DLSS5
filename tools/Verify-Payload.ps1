@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Re-runs the integrity checks from the 2026-09-04 security review against your local copy.
 

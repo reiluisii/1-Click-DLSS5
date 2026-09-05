@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     1 Click DLSS 5 v3.0.0 — Universal Neural Control Center
     Auto-Descoberta Instantânea de Jogos (Steam, Epic, GOG, Xbox, EA), Motor de Resolução em 1 Clique (Auto-Fix),
