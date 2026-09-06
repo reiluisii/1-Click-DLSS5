@@ -352,6 +352,13 @@ function Init-SystemTelemetryLog {
         $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
         [System.Threading.Monitor]::Enter($script:LogSyncRoot)
         try {
+            if (Test-Path -LiteralPath $script:LogFilePath) {
+                $fileInfo = Get-Item -LiteralPath $script:LogFilePath -ErrorAction SilentlyContinue
+                if ($fileInfo -and $fileInfo.Length -gt 1MB) {
+                    [System.IO.File]::WriteAllText($script:LogFilePath, $banner + "`r`n", $utf8NoBom)
+                    return
+                }
+            }
             [System.IO.File]::AppendAllText($script:LogFilePath, $banner + "`r`n", $utf8NoBom)
         }
         finally {
@@ -499,7 +506,7 @@ function Get-GamesCache {
                         $resolved = Resolve-GameTarget -TargetPath $cp
                         if ($resolved -and $resolved.Executable) {
                             $api = Detect-GameGraphicsApi -TargetExe $resolved.Executable -GameFolder $resolved.InstallFolder
-                            $upscaler = Detect-GameUpscalerType -GameFolder $resolved.InstallFolder -GameRoot $resolved.Root
+                            $upscaler = Detect-GameUpscalerType -GameFolder $resolved.InstallFolder -GameRoot $resolved.Root -TargetExe $resolved.Executable
                             $isInstalled = Test-GameDlss5Installed -GameFolder $resolved.InstallFolder
                             [void]$list.Add([pscustomobject]@{
                                 Order       = 1
@@ -1147,7 +1154,7 @@ $form.Add_DragDrop({
             try {
                 $resolved = Resolve-GameTarget -TargetPath $droppedPath
                 $api = Detect-GameGraphicsApi -TargetExe $resolved.Executable -GameFolder $resolved.InstallFolder
-                $upscaler = Detect-GameUpscalerType -GameFolder $resolved.InstallFolder -GameRoot $resolved.Root
+                $upscaler = Detect-GameUpscalerType -GameFolder $resolved.InstallFolder -GameRoot $resolved.Root -TargetExe $resolved.Executable
                 $isInstalled = Test-GameDlss5Installed -GameFolder $resolved.InstallFolder
                 $gObj = [pscustomobject]@{
                     Order       = 1
@@ -1550,6 +1557,17 @@ $lblCard3Desc.ForeColor = [System.Drawing.Color]::FromArgb(170, 195, 220)
 
 function Highlight-SelectedModeCard {
     param([string]$Mode)
+    $isX86 = ($script:SelectedGameObj -and ($script:SelectedGameObj.Api -match "X86" -or $script:SelectedGameObj.Api -match "32-bit"))
+    if ($isX86 -and ($Mode -eq "DIRECT" -or $Mode -eq "OPTISCALER")) {
+        $warn32 = if ($script:CurrentLang -eq "PT") { 
+            "Jogos 32-bit (x86) operam exclusivamente via FEEDER (com ponte neural host64). DIRECT e OPTISCALER exigem executavel 64-bit."
+        } else {
+            "32-bit (x86) games operate exclusively via FEEDER (with host64 bridge). DIRECT and OPTISCALER require a 64-bit executable."
+        }
+        Write-Status -Message "[AVISO] $warn32" -Level "WARN"
+        $Mode = "FEEDER"
+    }
+
     if ($script:SelectedMode -ne $Mode) {
         Write-Status -Message "[USER] Modo de operacao selecionado manualmente via Card: $Mode" -Level "INFO"
     }
@@ -1873,15 +1891,18 @@ function Select-GameInInspector {
         $picIcon.Image = $null
     }
 
-    $detected = $GameObj.Upscaler
+    $isX86 = ($GameObj.Api -match "X86" -or $GameObj.Api -match "32-bit")
+    $detected = if ($isX86) { "FEEDER" } else { $GameObj.Upscaler }
     $script:CurrentDetectedUpscaler = $detected
 
     $modeCode = "FEEDER"
-    if ($detected -eq "NATIVE_DLSS") {
-        $modeCode = "DIRECT"
-    }
-    elseif ($detected -eq "FSR2_BRIDGE" -or $detected -eq "XESS_BRIDGE") {
-        $modeCode = "OPTISCALER"
+    if (-not $isX86) {
+        if ($detected -eq "NATIVE_DLSS") {
+            $modeCode = "DIRECT"
+        }
+        elseif ($detected -eq "FSR2_BRIDGE" -or $detected -eq "XESS_BRIDGE") {
+            $modeCode = "OPTISCALER"
+        }
     }
     Highlight-SelectedModeCard -Mode $modeCode
 
@@ -2165,7 +2186,7 @@ $btnBrowse.Add_Click({
                 return
             }
             $api = Detect-GameGraphicsApi -TargetExe $resolved.Executable -GameFolder $resolved.InstallFolder
-            $upscaler = Detect-GameUpscalerType -GameFolder $resolved.InstallFolder -GameRoot $resolved.Root
+            $upscaler = Detect-GameUpscalerType -GameFolder $resolved.InstallFolder -GameRoot $resolved.Root -TargetExe $resolved.Executable
             $isInstalled = Test-GameDlss5Installed -GameFolder $resolved.InstallFolder
             $gObj = [pscustomobject]@{
                 Order       = 1

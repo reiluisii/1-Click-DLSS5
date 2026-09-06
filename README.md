@@ -1,4 +1,4 @@
-# ⚡ 1-Click DLSS 5 (v3.0.0)
+# ⚡ 1-Click DLSS 5 (v3.0.1-fix)
 
 <div align="center">
 
@@ -7,7 +7,7 @@
 ### **Universal Neural Control Center • RTX 20/30/40/50 Series**
 *Deploy Next-Generation DLSS 5 Neural Rendering into Any PC Game with Just 1 Click.*
 
-[![Release](https://img.shields.io/badge/Release-v2.7.0--beta-76b900?style=for-the-badge&logo=nvidia&logoColor=white)](https://github.com/reiluisii/1-Click-DLSS5/releases)
+[![Release](https://img.shields.io/badge/Release-v3.0.1--fix-76b900?style=for-the-badge&logo=nvidia&logoColor=white)](https://github.com/reiluisii/1-Click-DLSS5/releases)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows_10_%2F_11-0078d4?style=for-the-badge&logo=windows&logoColor=white)](https://microsoft.com/windows)
 [![Architecture](https://img.shields.io/badge/Architecture-x64_%7C_x86-orange?style=for-the-badge)]()

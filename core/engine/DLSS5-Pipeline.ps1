@@ -24,6 +24,32 @@ function Get-DLSS5PayloadDirectory {
     return $cand
 }
 
+function Set-Dlss5DgVoodooConfig {
+    param([Parameter(Mandatory = $true)][string]$ConfPath)
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    $text = if (Test-Path -LiteralPath $ConfPath) { [System.IO.File]::ReadAllText($ConfPath, [System.Text.Encoding]::UTF8) } else { "" }
+    
+    function Set-ConfVal($src, $sec, $k, $v) {
+        if ($src -match "\[$sec\]") {
+            if ($src -match "(?m)^$k\s*=") {
+                return [regex]::Replace($src, "(?m)^$k\s*=.*$", "$k = $v")
+            } else {
+                return [regex]::Replace($src, "(?m)\[$sec\]", "[$sec]`r`n$k = $v")
+            }
+        } else {
+            return $src + "`r`n[$sec]`r`n$k = $v`r`n"
+        }
+    }
+    $text = Set-ConfVal $text "General" "OutputAPI" "d3d11_fl11_0"
+    $text = Set-ConfVal $text "General" "CaptureMouse" "false"
+    $text = Set-ConfVal $text "DirectX" "DisableAndPassThru" "false"
+    $text = Set-ConfVal $text "DirectX" "VideoCard" "internal3D"
+    $text = Set-ConfVal $text "DirectX" "VRAM" "1024"
+    $text = Set-ConfVal $text "DirectX" "dgVoodooWatermark" "false"
+
+    [System.IO.File]::WriteAllText($ConfPath, $text, $utf8NoBom)
+}
+
 function Set-Dlss5ReShadePresetIni {
     param(
         [Parameter(Mandatory = $true)][string]$PresetPath,
@@ -126,6 +152,12 @@ function Set-Dlss5ReShadeIni {
                 } elseif ($text -match '\[ADDON\]') {
                     $text = [regex]::Replace($text, '(?m)\[ADDON\]', "[ADDON]`r`nAddonPath=.\\")
                 }
+                # 6. SkipLoadingDisabledEffects=1 para compilar apenas os shaders ativos no preset
+                if ($text -match '(?m)^SkipLoadingDisabledEffects=') {
+                    $text = [regex]::Replace($text, '(?m)^SkipLoadingDisabledEffects=.*$', 'SkipLoadingDisabledEffects=1')
+                } elseif ($text -match '\[GENERAL\]') {
+                    $text = [regex]::Replace($text, '(?m)\[GENERAL\]', "[GENERAL]`r`nSkipLoadingDisabledEffects=1")
+                }
             }
 
             # 6. Atualiza ou adiciona secao [RenoDX.DLSS5]
@@ -185,7 +217,7 @@ PresetPath=.\ReShadePreset.ini
 PresetShortcutKeys=
 PresetShortcutPaths=
 PresetTransitionDuration=1000
-SkipLoadingDisabledEffects=0
+SkipLoadingDisabledEffects=1
 StartupPresetPath=
 TextureSearchPaths=.\reshade-shaders\Textures\**
 
@@ -296,16 +328,22 @@ function Install-Dlss5 {
     }
 
     $payloadDir = Get-DLSS5PayloadDirectory
-    $detectedUpscaler = Detect-GameUpscalerType -GameFolder $targetFolder -GameRoot $target.Root
-    $api = Detect-GameGraphicsApi -TargetExe $target.Executable -GameFolder $targetFolder
     $isX64 = ($target.Architecture -eq "X64")
     $bitness = if ($isX64) { 64 } else { 32 }
+    $detectedUpscaler = Detect-GameUpscalerType -GameFolder $targetFolder -GameRoot $target.Root -TargetExe $target.Executable
+    $api = Detect-GameGraphicsApi -TargetExe $target.Executable -GameFolder $targetFolder
 
     $effectiveMode = $SelectedMode
     if ($effectiveMode -eq "AUTO") {
-        if ($detectedUpscaler -eq "NATIVE_DLSS") { $effectiveMode = "DIRECT" }
-        elseif ($detectedUpscaler -eq "FSR2_BRIDGE" -or $detectedUpscaler -eq "XESS_BRIDGE") { $effectiveMode = "OPTISCALER" }
+        if ($isX64 -and $detectedUpscaler -eq "NATIVE_DLSS") { $effectiveMode = "DIRECT" }
+        elseif ($isX64 -and ($detectedUpscaler -eq "FSR2_BRIDGE" -or $detectedUpscaler -eq "XESS_BRIDGE")) { $effectiveMode = "OPTISCALER" }
         else { $effectiveMode = "FEEDER" }
+    }
+
+    # Blindagem de Arquitetura: Jogos 32-bit (x86) sao estritamente incompativeis com DIRECT e OPTISCALER
+    if (-not $isX64 -and ($effectiveMode -eq "DIRECT" -or $effectiveMode -eq "OPTISCALER")) {
+        Write-Status -Message "[AVISO] Jogos de 32-bit (x86) nao suportam DLSS Nativo diretamente (incompativeis com DLLs 64-bit). Redirecionando com seguranca para o modo FEEDER com ponte neural host64." -Level "WARN"
+        $effectiveMode = "FEEDER"
     }
 
     if ($ProgressCallback) { &$ProgressCallback 25 "Jogo: $($target.ExeName) | API: $api | Modo: $effectiveMode" }
@@ -457,6 +495,13 @@ function Install-Dlss5 {
         $shaderDst = Join-Path $targetFolder "reshade-shaders\Shaders"
         if (Test-Path -LiteralPath $shaderSrc) {
             [void](New-Item -ItemType Directory -Path $shaderDst -Force)
+            # Limpeza preventiva de shaders orfaos ou quebrados de versoes anteriores
+            foreach ($brokenShader in @("FXAA.fx", "FXAA.fxh", "SMAA.fx", "SMAA.fxh")) {
+                $orphanPath = Join-Path $shaderDst $brokenShader
+                if (Test-Path -LiteralPath $orphanPath) {
+                    Remove-Item -LiteralPath $orphanPath -Force -ErrorAction SilentlyContinue
+                }
+            }
             Get-ChildItem -LiteralPath $shaderSrc -File -Recurse | ForEach-Object {
                 $relSub = Get-Dlss5RelativePath -BasePath $shaderSrc -TargetPath $_.FullName
                 $targetFile = Join-Path $shaderDst $relSub
@@ -477,15 +522,58 @@ function Install-Dlss5 {
         $cfgSrc = Join-Path $feederDir "dlss5-feed.cfg"
         if (Test-Path -LiteralPath $cfgSrc) { &$safeCopyInternal $cfgSrc (Join-Path $targetFolder "dlss5-feed.cfg") "config" }
 
-        # ReShade Proxy para Feeder
-        $proxyName = if ($api -eq "D3D9") { "d3d9.dll" } elseif ($api -eq "OPENGL") { "opengl32.dll" } else { "dxgi.dll" }
-        $proxyTarget = Join-Path $targetFolder $proxyName
-        $proxyDllName = if ($isX64) { "dxgi.dll" } else { "dxgi32.dll" }
-        $proxySrc = Join-Path $payloadDir $proxyDllName
-        if (Test-Path -LiteralPath $proxySrc) {
-            &$safeCopyInternal $proxySrc $proxyTarget "reshade"
-            $manifest.reshade.installedByUs = $true
-            $manifest.reshade.file = $proxyName
+        # ReShade Proxy e dgVoodoo para Feeder
+        if ($api -eq "D3D8" -or $api -eq "D3D9") {
+            $dgDir = Join-Path $feederDir "dgvoodoo"
+            $dgDllName = if ($api -eq "D3D8") { "D3D8.dll" } else { "D3D9.dll" }
+            $dgArchSub = if ($isX64) { "x64" } else { "x86" }
+            $dgDllSrc = Join-Path $dgDir "MS\$dgArchSub\$dgDllName"
+            $dgConfSrc = Join-Path $dgDir "dgVoodoo.conf"
+            $dgCplSrc = Join-Path $dgDir "dgVoodooCpl.exe"
+
+            if (Test-Path -LiteralPath $dgDllSrc) {
+                # Injeta dgVoodoo para traduzir D3D9 -> D3D11 com suporte total a Compute Shaders
+                &$safeCopyInternal $dgDllSrc (Join-Path $targetFolder $dgDllName) "dgvoodoo"
+                if (Test-Path -LiteralPath $dgCplSrc) {
+                    &$safeCopyInternal $dgCplSrc (Join-Path $targetFolder "dgVoodooCpl.exe") "dgvoodoo"
+                }
+                $destConf = Join-Path $targetFolder "dgVoodoo.conf"
+                $baseConf = if (Test-Path -LiteralPath $destConf) { $destConf } else { $dgConfSrc }
+                if (Test-Path -LiteralPath $baseConf) {
+                    &$safeCopyInternal $baseConf $destConf "config"
+                    Set-Dlss5DgVoodooConfig -ConfPath $destConf
+                }
+                # Com dgVoodoo ativo, o ReShade intercepta via dxgi.dll (D3D11)
+                $proxyTarget = Join-Path $targetFolder "dxgi.dll"
+                $proxyDllName = if ($isX64) { "dxgi.dll" } else { "dxgi32.dll" }
+                $proxySrc = Join-Path $payloadDir $proxyDllName
+                if (Test-Path -LiteralPath $proxySrc) {
+                    &$safeCopyInternal $proxySrc $proxyTarget "reshade"
+                    $manifest.reshade.installedByUs = $true
+                    $manifest.reshade.file = "dxgi.dll"
+                }
+            } else {
+                # Fallback direto se dgVoodoo nao estiver presente
+                $proxyName = if ($api -eq "D3D9") { "d3d9.dll" } else { "d3d8.dll" }
+                $proxyTarget = Join-Path $targetFolder $proxyName
+                $proxyDllName = if ($isX64) { "dxgi.dll" } else { "dxgi32.dll" }
+                $proxySrc = Join-Path $payloadDir $proxyDllName
+                if (Test-Path -LiteralPath $proxySrc) {
+                    &$safeCopyInternal $proxySrc $proxyTarget "reshade"
+                    $manifest.reshade.installedByUs = $true
+                    $manifest.reshade.file = $proxyName
+                }
+            }
+        } else {
+            $proxyName = if ($api -eq "OPENGL") { "opengl32.dll" } else { "dxgi.dll" }
+            $proxyTarget = Join-Path $targetFolder $proxyName
+            $proxyDllName = if ($isX64) { "dxgi.dll" } else { "dxgi32.dll" }
+            $proxySrc = Join-Path $payloadDir $proxyDllName
+            if (Test-Path -LiteralPath $proxySrc) {
+                &$safeCopyInternal $proxySrc $proxyTarget "reshade"
+                $manifest.reshade.installedByUs = $true
+                $manifest.reshade.file = $proxyName
+            }
         }
 
         $targetIni = Join-Path $targetFolder "ReShade.ini"
@@ -533,7 +621,7 @@ function Uninstall-Dlss5 {
     $purgeList = @(
         "renodx-dlss5.addon64", "dlss5-feed.addon64", "dlss5-feed.addon32", "dlss5-feed.cfg",
         "nvngx_dlssnr.dll", "sl.dlss_nr.dll", "OptiScaler.ini", "OptiScaler.log",
-        "dlss5-feed.log", "dlss5-feed.ini", "dlss5-feed-host.log"
+        "dlss5-feed.log", "dlss5-feed.ini", "dlss5-feed-host.log", "dgVoodoo.conf", "dgVoodooCpl.exe", "D3D8.dll"
     )
     foreach ($item in $purgeList) {
         $p = Join-Path $targetFolder $item

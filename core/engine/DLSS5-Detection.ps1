@@ -150,11 +150,35 @@ function Detect-GameGraphicsApi {
 function Detect-GameUpscalerType {
     param(
         [Parameter(Mandatory = $true)][string]$GameFolder,
-        [Parameter(Mandatory = $false)][string]$GameRoot = ""
+        [Parameter(Mandatory = $false)][string]$GameRoot = "",
+        [Parameter(Mandatory = $false)][string]$TargetExe = ""
     )
+    # Salvaguarda 1: Se o executavel for 32-bit (X86), DLSS Nativo e OptiScaler sao tecnicamente impossiveis (NVIDIA DLSS e puramente 64-bit).
+    # Trava o retorno em FEEDER para evitar falsos-positivos em jogos legados (ex: Call of Cthulhu, Mafia II, Hitman, GTA SA).
+    if ($TargetExe -and (Test-Path -LiteralPath $TargetExe -PathType Leaf)) {
+        if ([DLSS5PeEngine]::GetArchitecture($TargetExe) -eq "X86") {
+            return "FEEDER"
+        }
+    }
+
     $searchFolders = @($GameFolder)
     if ($GameRoot -and (Test-Path -LiteralPath $GameRoot) -and ($GameRoot -ne $GameFolder)) {
         $searchFolders += $GameRoot
+    }
+
+    # Salvaguarda 2: Se nao foi passado TargetExe, verifica se todos os executaveis da pasta sao 32-bit
+    if (-not $TargetExe) {
+        $exesInFolder = @(Get-ChildItem -LiteralPath $GameFolder -Filter "*.exe" -File -Depth 2 -ErrorAction SilentlyContinue)
+        if ($exesInFolder.Count -gt 0) {
+            $has64 = $false
+            foreach ($e in $exesInFolder) {
+                if ([DLSS5PeEngine]::GetArchitecture($e.FullName) -eq "X64") {
+                    $has64 = $true
+                    break
+                }
+            }
+            if (-not $has64) { return "FEEDER" }
+        }
     }
 
     # 1. Presenca de DLSS Nativo (nvngx_dlss.dll ou Streamline)
@@ -231,7 +255,7 @@ function Resolve-GameTarget {
     $allExes = @(Get-ChildItem -LiteralPath $folder -Filter "*.exe" -File -Recurse -Depth 4 -ErrorAction SilentlyContinue)
 
     $ignoredDirPattern = '\\(redistributables?|_commonredist|commonredist|redist|installers?|support|tools?|launcher|dotnet|directx|vcredist|__installer|_dlss5_backup|_backup[^\\]*|engine\\binaries|host64)(\\|$)'
-    $ignoredPattern = '(crashreport|crashhandler|crashpad|unitycrashhandler|unins|setup|install|config|launcher|easyanticheat|eac_|battleye|epicgameslauncher|redist|dxsetup|quickstart|webinstaller|support|console|banana|social-club|socialclub|rockstar|updater|report|activation|benchmark|dedicatedserver|helper|cleanup|touchup|bootstrap|dlss5-feed-host)'
+    $ignoredPattern = '(^play[a-z0-9_-]*|crashreport|crashhandler|crashpad|unitycrashhandler|unins|setup|install|config|launcher|easyanticheat|eac_|battleye|epicgameslauncher|redist|dxsetup|quickstart|webinstaller|support|console|banana|social-club|socialclub|rockstar|updater|report|activation|benchmark|dedicatedserver|helper|cleanup|touchup|bootstrap|dlss5-feed-host|gtavlauncher|rockstarservice)'
     
     $filtered = @($allExes | Where-Object {
         $baseName = $_.BaseName.ToLowerInvariant()
@@ -243,7 +267,7 @@ function Resolve-GameTarget {
     }
     if ($filtered.Count -eq 0) { $filtered = $allExes }
 
-    # Se o executavel foi apontado diretamente, honra a escolha do usuario
+    # Se o executavel foi apontado diretamente, honra a escolha do usuario (a menos que seja launcher obvio)
     if (-not $targetItem.PSIsContainer -and $targetItem.Extension -ieq ".exe") {
         $exePath = $targetItem.FullName
     }
@@ -280,17 +304,28 @@ function Resolve-GameTarget {
         }
     }
 
+    # Heuristica de pontuacao de executavel legítimo
+    $scoreExe = {
+        param($fileItem)
+        $score = 0
+        $n = $fileItem.Name.ToLowerInvariant()
+        if ($n -match '^(gta5|gta5_enhanced|rdr2|cyberpunk2077|witcher3|forza|deadspace|hogwartslegacy)\.exe$') { $score += 5000 }
+        if ($n -match '(play|launcher|loader|helper|tool|updater|patcher|benchmark|diagnostics|service)') { $score -= 2000 }
+        if ($fileItem.Name -imatch '(\.x64\.exe|_x64\.exe|win64.*\.exe)$') { $score += 1000 }
+        return $score
+    }
+
     if (-not $exePath) {
-        # Prioridade D: Maior executavel 64-bit na raiz ou pasta mais rasa
-        $x64All = @($filtered | Where-Object { [DLSS5PeEngine]::GetArchitecture($_.FullName) -eq "X64" } | Sort-Object -Property Length -Descending)
+        # Prioridade D: Maior executavel 64-bit com maior pontuacao de jogo e tamanho
+        $x64All = @($filtered | Where-Object { [DLSS5PeEngine]::GetArchitecture($_.FullName) -eq "X64" } | Sort-Object -Property @{Expression = { &$scoreExe $_ }; Descending = $true }, @{Expression = { $_.Directory.FullName.Split('\').Length }; Descending = $false }, @{Expression = { $_.Length }; Descending = $true })
         if ($x64All.Count -gt 0) {
             $exePath = $x64All[0].FullName
         }
     }
 
     if (-not $exePath -and $filtered.Count -gt 0) {
-        # Prioridade E: Maior executavel x86
-        $exePath = ($filtered | Sort-Object -Property Length -Descending)[0].FullName
+        # Prioridade E: Maior executavel x86 com maior pontuacao de jogo e tamanho
+        $exePath = ($filtered | Sort-Object -Property @{Expression = { &$scoreExe $_ }; Descending = $true }, @{Expression = { $_.Directory.FullName.Split('\').Length }; Descending = $false }, @{Expression = { $_.Length }; Descending = $true })[0].FullName
     }
 
     if (-not $exePath) {
@@ -429,7 +464,7 @@ function Scan-DriveForGames {
         if ($null -eq $resolved) { continue }
 
         $api = Detect-GameGraphicsApi -TargetExe $resolved.Executable -GameFolder $resolved.InstallFolder
-        $upscaler = Detect-GameUpscalerType -GameFolder $resolved.InstallFolder -GameRoot $resolved.Root
+        $upscaler = Detect-GameUpscalerType -GameFolder $resolved.InstallFolder -GameRoot $resolved.Root -TargetExe $resolved.Executable
         $arch = $resolved.Architecture
         $isInstalled = Test-GameDlss5Installed -GameFolder $resolved.InstallFolder
 

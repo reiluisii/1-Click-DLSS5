@@ -4,10 +4,23 @@ All notable changes, architectural overhauls, and bug fixes for the **1 Click DL
 
 ## [v3.0.1-fix] - 2026-09-05
 
-### 🚑 Emergency Startup Fix (Windows PowerShell 5.1 & Encoding)
-- **Resolved First-Launch Crash on Windows 10/11:** Fixed a critical issue where the absence of a UTF-8 Byte Order Mark (BOM) in `.ps1` files caused Windows PowerShell 5.1 (the default built-in PowerShell on Windows) to parse localized Unicode strings as ANSI, resulting in cascading syntax and unexpected token errors upon launching `1-Click-DLSS5.exe`.
-- **Enforced Single UTF-8 BOM:** Normalized and sanitized all PowerShell scripts (`core/1-Click-DLSS5.ps1`, `core/engine/*.ps1`, `tools/*.ps1`) with an explicit UTF-8 BOM, guaranteeing flawless parsing across all Windows locales (English, Russian, Portuguese, German, French, Chinese, Japanese, etc.).
-- **Enhanced Launcher Detection:** Updated `1-Click-DLSS5.exe` with multi-path detection for modern PowerShell 7 (`pwsh.exe`) alongside built-in Windows PowerShell 5.1, plus UTF-8 error stream decoding.
+### 🚑 Critical Production Fixes & Reliability Overhaul
+- **Resolved ReShade Shader/Effects Compilation Failure (#25):**
+  - **Root Cause Eliminated:** Removed incomplete auxiliary effects (`FXAA.fx`, `SMAA.fx`) that attempted to include non-existent headers (`Fxaa3_11.h`, `SMAA.h`), which caused ReShade to throw a red error banner across legacy and modern titles alike.
+  - **On-Demand Effect Compilation:** Configured `SkipLoadingDisabledEffects=1` in generated `ReShade.ini`, instructing ReShade to only compile active DLSS 5 feed techniques (`DLSS5_Feed.fx`, `lumenite_Kernel.fx`), slashing game boot times and preventing compilation errors from unused shaders.
+  - **Orphan Shader Cleanup:** Added preventive purge during injection to automatically clean up residual `FXAA.*` and `SMAA.*` files left in game directories by previous versions.
+- **Fixed GTA 5 Launcher Targeting (#26):**
+  - **Launcher Filter Enhancement:** Extended exclusion heuristics in `Resolve-GameTarget` to reject bootstrap launchers like `PlayGTAV.exe`, `GTAVLauncher.exe`, `RockstarService.exe`, and `SocialClubHelper.exe`.
+  - **Intelligent Executable Scoring:** Implemented an executable priority scoring algorithm that ensures genuine game binaries (`GTA5.exe`, `GTA5_Enhanced.exe`) are prioritized over updater/launcher wrappers.
+- **32-Bit (x86) Game Safety & Automatic Redirect:**
+  - **Architecture Guard:** Added PE-header architecture checks preventing 32-bit games (e.g. *Call of Cthulhu: Dark Corners of the Earth*, *Mafia II*, *Hitman: Blood Money*, *GTA San Andreas*) from inadvertently running DIRECT (Mode 1) or OptiScaler (which require 64-bit binaries).
+  - **Automated Mode Intercept:** `Install-Dlss5` automatically redirects x86 titles to `FEEDER` mode, which natively supports 32-bit binaries (`dxgi32.dll` and `dlss5-feed.addon32`).
+  - **dgVoodoo2 D3D8/D3D9 Bridge:** Integrated official dgVoodoo2 (`MS/x86/D3D8.dll`, `MS/x86/D3D9.dll`, `MS/x64/D3D9.dll`) to translate legacy DirectX 8 and 9 draw calls into Direct3D 11 (`OutputAPI=d3d11_fl11_0`), enabling full DXGI hooks and ReShade Compute Shader (`cs_5_0`) capabilities.
+- **Release Hygiene & Developer Telemetry Scrub:**
+  - **Zeroed Release Telemetry:** Truncated and sanitized release logs (`1-Click-DLSS5.log`), reset `assets/config.json` to neutral defaults, and emptied `assets/games_cache.json` so personal developer hardware specs and directory paths are never exposed in distributed release packages.
+  - **Automated Packaging Exclusions:** Added release packaging validation script guaranteeing `*.log`, cache files, and private machine data are strictly omitted from public release archives.
+- **Windows PowerShell 5.1 Encoding Fix:**
+  - Normalized all `.ps1` engine and core scripts with explicit UTF-8 with BOM to prevent unexpected token syntax errors on default Windows installations.
 
 ## [v3.0.0] - 2026-09-05
 
