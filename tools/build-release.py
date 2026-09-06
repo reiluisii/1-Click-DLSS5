@@ -7,9 +7,9 @@ import re
 def main():
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     dist_dir = os.path.dirname(repo_root)
-    zip_output = os.path.join(dist_dir, "1-Click-DLSS5-v3.0.1-fix.zip")
+    zip_output = os.path.join(dist_dir, "1-Click-DLSS5-v3.0.2.zip")
 
-    print(f"=== 1-Click DLSS 5 Release Packager (v3.0.1-fix) ===")
+    print(f"=== 1-Click DLSS 5 Release Packager (v3.0.2) ===")
     print(f"Source: {repo_root}")
     print(f"Destination: {zip_output}")
 

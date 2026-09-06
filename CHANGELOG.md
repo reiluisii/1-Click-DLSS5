@@ -2,7 +2,7 @@
 
 All notable changes, architectural overhauls, and bug fixes for the **1 Click DLSS 5** project are documented in this file.
 
-## [v3.0.1-fix] - 2026-09-05
+## [v3.0.2] - 2026-09-05
 
 ### 🚑 Critical Production Fixes & Reliability Overhaul
 - **Resolved ReShade Shader/Effects Compilation Failure (#25):**

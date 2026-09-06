@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    1 Click DLSS 5 v3.0.1-fix — Universal Neural Control Center
+    1 Click DLSS 5 v3.0.2 — Universal Neural Control Center
     Auto-Descoberta Instantânea de Jogos (Steam, Epic, GOG, Xbox, EA), Motor de Resolução em 1 Clique (Auto-Fix),
     Suporte Universal a APIs (DirectX 9/10/11/12, Vulkan, OpenGL), 32 e 64-bit, 10 Idiomas Nativos.
 #>
@@ -84,7 +84,7 @@ function Apply-DpiScaling {
 
 
 # --- CONFIGURACOES GLOBAIS ---
-$script:Version = "3.0.1-fix"
+$script:Version = "3.0.2"
 $script:AddOnName = "renodx-dlss5.addon64"
 $script:StateName = "_dlss5_install_state.json"
 $script:BackupName = "_DLSS5_Backup"
@@ -238,7 +238,7 @@ function Write-Status {
 }
 
 function Get-FormattedTelemetryBanner {
-    param([string]$Version = "3.0.1-fix")
+    param([string]$Version = "3.0.2")
     $sb = [System.Text.StringBuilder]::new()
     $ts = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss.fff")
     

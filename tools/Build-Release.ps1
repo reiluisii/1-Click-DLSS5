@@ -1,5 +1,5 @@
 # ==============================================================================
-# 1 Click DLSS 5 — Release Packaging & Privacy Audit Engine (v3.0.1-fix)
+# 1 Click DLSS 5 — Release Packaging & Privacy Audit Engine (v3.0.2)
 # ==============================================================================
 [CmdletBinding()]
 param()
@@ -7,10 +7,10 @@ param()
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path "$PSScriptRoot/..").Path
 $distDir = Split-Path -Parent $repoRoot
-$zipOutput = Join-Path $distDir "1-Click-DLSS5-v3.0.1-fix.zip"
+$zipOutput = Join-Path $distDir "1-Click-DLSS5-v3.0.2.zip"
 
 Write-Host "==================================================================" -ForegroundColor Cyan
-Write-Host " 1 Click DLSS 5 — Release Packaging & Privacy Audit (v3.0.1-fix)" -ForegroundColor Cyan
+Write-Host " 1 Click DLSS 5 — Release Packaging & Privacy Audit (v3.0.2)" -ForegroundColor Cyan
 Write-Host "==================================================================" -ForegroundColor Cyan
 Write-Host "Source:      $repoRoot"
 Write-Host "Destination: $zipOutput"
@@ -163,7 +163,7 @@ if ($leakCount -gt 0) {
 Write-Host "  -> Audit PASSED: Zero personal data, zero developer logs detected in package." -ForegroundColor Green
 
 Write-Host "`n==================================================================" -ForegroundColor Green
-Write-Host " Release v3.0.1-fix successfully built, verified, and audited!" -ForegroundColor Green
+Write-Host " Release v3.0.2 successfully built, verified, and audited!" -ForegroundColor Green
 Write-Host " Location: $zipOutput" -ForegroundColor Green
 Write-Host " Size:     $zipSizeMb MB ($($zipItem.Length) bytes)" -ForegroundColor Green
 Write-Host " Files:    $packagedCount files" -ForegroundColor Green
