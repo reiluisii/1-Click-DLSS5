@@ -21,7 +21,17 @@ function Get-XboxGameConfigExe {
                         if ($exeRel -ieq "gamelaunchhelper.exe") { continue }
                         $cfgDir = Split-Path -Parent $cfg
                         $resolvedExe = Join-Path $cfgDir $exeRel
-                        $arch = if ($archMatch.Success -and $archMatch.Groups[1].Value -ieq "x64") { "X64" } else { "X86" }
+                        $arch = "UNKNOWN"
+                        if (Test-Path -LiteralPath $resolvedExe -PathType Leaf) {
+                            $arch = [DLSS5PeEngine]::GetArchitecture($resolvedExe)
+                        }
+                        if ($arch -eq "UNKNOWN" -or -not $arch) {
+                            if ($archMatch.Success) {
+                                $arch = if ($archMatch.Groups[1].Value -ieq "x86") { "X86" } else { "X64" }
+                            } else {
+                                $arch = "X64"
+                            }
+                        }
                         return [pscustomobject]@{
                             ConfigPath   = $cfg
                             Executable   = $resolvedExe
@@ -242,13 +252,15 @@ function Resolve-GameTarget {
         $xExe = $xboxResult.Executable
         $icon = $null
         try { $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($xExe) } catch {}
+        $peArch = [DLSS5PeEngine]::GetArchitecture($xExe)
+        $actualArch = if ($peArch -and $peArch -ne "UNKNOWN") { $peArch } else { $xboxResult.Architecture }
         return [pscustomobject]@{
             Root          = $root
             InstallFolder = (Split-Path -Parent $xExe)
             Executable    = $xExe
             ExeName       = (Split-Path -Leaf $xExe)
             Icon          = $icon
-            Architecture  = $xboxResult.Architecture
+            Architecture  = $actualArch
         }
     }
 

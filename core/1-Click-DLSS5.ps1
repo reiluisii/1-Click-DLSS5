@@ -473,9 +473,20 @@ function Get-GamesCache {
                     [void]$seenPaths.Add($norm)
                     
                     $icon = $null
+                    $realApi = $c.Api
+                    $realUpscaler = $c.Upscaler
+                    $realExeName = $c.ExeName
                     try {
                         $resolved = Resolve-GameTarget -TargetPath $c.Path
-                        if ($resolved -and $resolved.Icon) { $icon = $resolved.Icon }
+                        if ($resolved) {
+                            if ($resolved.Icon) { $icon = $resolved.Icon }
+                            if ($resolved.Executable) {
+                                $detectedApi = Detect-GameGraphicsApi -TargetExe $resolved.Executable -GameFolder $resolved.InstallFolder
+                                $realApi = "$detectedApi ($($resolved.Architecture))"
+                                $realUpscaler = Detect-GameUpscalerType -GameFolder $resolved.InstallFolder -GameRoot $resolved.Root -TargetExe $resolved.Executable
+                                $realExeName = $resolved.ExeName
+                            }
+                        }
                     } catch {}
                     
                     $isInstalled = Test-GameDlss5Installed -GameFolder $c.Path
@@ -484,11 +495,11 @@ function Get-GamesCache {
                         Order       = $c.Order
                         Name        = $c.Name
                         Path        = $c.Path
-                        Api         = $c.Api
-                        Upscaler    = $c.Upscaler
+                        Api         = $realApi
+                        Upscaler    = $realUpscaler
                         IsInstalled = $isInstalled
                         Icon        = $icon
-                        ExeName     = $c.ExeName
+                        ExeName     = $realExeName
                     })
                 }
             }
@@ -1872,6 +1883,14 @@ function Select-GameInInspector {
 
     try {
         $resolved = Resolve-GameTarget -TargetPath $GameObj.Path
+        if ($resolved -and $resolved.Executable) {
+            $realArch = $resolved.Architecture
+            $realApi = Detect-GameGraphicsApi -TargetExe $resolved.Executable -GameFolder $resolved.InstallFolder
+            $realUpscaler = Detect-GameUpscalerType -GameFolder $resolved.InstallFolder -GameRoot $resolved.Root -TargetExe $resolved.Executable
+            $GameObj.Api = "$realApi ($realArch)"
+            $GameObj.Upscaler = $realUpscaler
+            $GameObj.ExeName = $resolved.ExeName
+        }
         Repair-GameCriticalDependencies -TargetFolder $resolved.InstallFolder -TargetExe $resolved.Executable
     }
     catch {}
