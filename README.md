@@ -1,4 +1,4 @@
-# ⚡ 1-Click DLSS 5 (v3.0.2)
+# ⚡ 1-Click DLSS 5 (v3.0.2) !ABANDONED!
 
 <div align="center">
 
